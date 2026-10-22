@@ -1,0 +1,5 @@
+# Evaluation protocol
+
+Use the official AVSBench task splits and metric implementation after verifying their current release documentation. Keep all frames and derived samples from one source video in a single split. Hash and record manifests and configuration. Select checkpoints using validation only. For binary masks report IoU, F-score, and the exact official metric needed for the selected task; document empty-mask convention.
+
+Robustness conditions include deterministic audio noise/attenuation/dropout, visual blur/downsampling/occlusion, and audio-video offsets including zero. Keep masks unchanged; record severity and seed per example. Compare baseline and gate under identical conditions, with clean performance, degradation, per-example metrics, and latency. Repeat seeds and report mean and spread. Synthetic smoke outputs are pipeline checks and must not appear as benchmark results.

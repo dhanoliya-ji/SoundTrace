@@ -1,0 +1,3 @@
+# Dataset access and terms
+
+The official AVSBench project page states that its dataset is published under CC BY-NC 4.0 and says processed videos/audios are available by request. The repository separately identifies its software license as Apache 2.0; that software license does not replace the dataset terms. This workspace does not contain the dataset. Before use, verify the current release terms, attribution, source-video rights, and access procedure at the [AVSBench project page](https://opennlplab.github.io/AVSBench/) and [official repository](https://github.com/OpenNLPLab/AVSBench). A dataset license statement does not establish every source clip’s rights or provide legal advice. Do not redistribute clips, masks, or derived checkpoints without authorization.

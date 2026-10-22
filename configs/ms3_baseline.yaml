@@ -1,0 +1,10 @@
+gated: false
+width: 32
+seed: 7
+image_size: 128
+audio_sample_rate: 16000
+segment_seconds: 1.0
+manifest: data/manifests/ms3.jsonl
+epochs: 20
+batch_size: 4
+learning_rate: 0.0003

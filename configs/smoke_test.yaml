@@ -1,0 +1,6 @@
+smoke: true
+gated: false
+width: 8
+seed: 7
+image_size: 64
+audio_sample_rate: 16000
