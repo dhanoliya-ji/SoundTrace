@@ -52,7 +52,7 @@ Training expects a reviewed JSONL manifest containing `mask`, `video_id`, and `t
 
 ## API
 
-`GET /api/v1/health`, `/dataset/status`, `/model/status`; `POST /predictions` accepts a video upload and queues background inference; `GET /predictions/{id}` returns persisted job status, while `GET /predictions/{id}/masks` returns sampled masks across the clip. Jobs persist on disk under `artifacts/jobs` (configurable with `SOUNDTRACE_JOB_DIR`). Uploads are size-limited and removed after processing. Inference samples frames at 2 FPS by default; set `SOUNDTRACE_INFERENCE_FPS` to change the sampling rate. Configure a trained checkpoint with `SOUNDTRACE_CHECKPOINT`.
+`GET /api/v1/health`, `/dataset/status`, `/model/status`; `POST /predictions` accepts a video upload and queues background inference; `GET /predictions/{id}` returns persisted job status, while `GET /predictions/{id}/masks` returns sampled masks across the clip. Jobs persist on disk under `artifacts/jobs` (configurable with `SOUNDTRACE_JOB_DIR`). Uploads are size-limited and removed after processing. Inference samples frames at 2 FPS by default; set `SOUNDTRACE_INFERENCE_FPS` to change the sampling rate. The API uses `artifacts/checkpoints/best.pt` by default; set `SOUNDTRACE_CHECKPOINT` to select another trained checkpoint.
 
 ## Design and research
 

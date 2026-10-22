@@ -26,6 +26,10 @@ def configured_path(value: str, default: str) -> Path:
     return path if path.is_absolute() else PROJECT_ROOT / path
 
 
+def configured_checkpoint() -> Path:
+    return configured_path(os.getenv("SOUNDTRACE_CHECKPOINT", ""), "artifacts/checkpoints/best.pt")
+
+
 def job_path(job_id: str) -> Path:
     if not job_id.isalnum():
         raise HTTPException(404, "Prediction not found")
@@ -61,9 +65,8 @@ def dataset_status():
 
 @app.get("/api/v1/model/status")
 def model_status():
-    raw_path = os.getenv("SOUNDTRACE_CHECKPOINT", "")
-    path = configured_path(raw_path, "") if raw_path else None
-    ready = bool(path and path.is_file())
+    path = configured_checkpoint()
+    ready = path.is_file()
     return {"available": ready, "checkpoint": path.name if ready else None,
             "message": "Trained checkpoint ready." if ready else "No trained checkpoint configured."}
 
@@ -86,8 +89,8 @@ def process_upload(job_id: str, path: Path) -> None:
         if fps <= 0 or frame_count <= 0:
             cap.release()
             raise ValueError("Video duration or frame rate could not be read.")
-        checkpoint = configured_path(os.getenv("SOUNDTRACE_CHECKPOINT", ""), "") if os.getenv("SOUNDTRACE_CHECKPOINT") else None
-        if not checkpoint or not checkpoint.is_file():
+        checkpoint = configured_checkpoint()
+        if not checkpoint.is_file():
             cap.release()
             raise ValueError("No trained checkpoint configured; refusing random-weight prediction.")
         state = torch.load(checkpoint, map_location="cpu", weights_only=True)

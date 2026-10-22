@@ -150,6 +150,18 @@ def test_prediction_job_and_mask_timeline_are_persisted(tmp_path, monkeypatch):
     assert get_masks(job_id)["frames"][0]["mask"] == [[0, 1], [1, 0]]
 
 
+def test_api_uses_default_best_checkpoint_path(tmp_path, monkeypatch):
+    from soundtrace import api
+
+    checkpoint = tmp_path / "artifacts" / "checkpoints" / "best.pt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_bytes(b"checkpoint fixture")
+    monkeypatch.setattr(api, "PROJECT_ROOT", tmp_path)
+    monkeypatch.delenv("SOUNDTRACE_CHECKPOINT", raising=False)
+    assert api.model_status()["available"]
+    assert api.model_status()["checkpoint"] == "best.pt"
+
+
 def test_avatar_archive_conversion_builds_polygon_masks_and_pairs_zero_padded_video_ids(tmp_path):
     import json
     import zipfile
