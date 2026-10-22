@@ -12,7 +12,7 @@
 
 ## Current evidence
 
-- 12 Python tests pass, Ruff passes, the frontend production build passes, the FastAPI app imports, and the CLI exposes the paired-study command.
+- 13 Python tests pass, Ruff passes, the frontend production build passes, the FastAPI app imports, and the CLI exposes the paired-study command.
 - A one-seed end-to-end paired training run succeeded on generated synthetic files. Its metrics are not AVSBench evidence; generated reports and checkpoints were removed afterward.
 - The AVSBench adapter was exercised against generated fixtures and checked against the official public S4/MS3 loader paths, but not against an acquired release.
 - No AVSBench dataset, trained real-data checkpoint, or benchmark result is present. Synthetic smoke output is only an engineering check.
@@ -27,4 +27,4 @@
 
 ## Important limits
 
-SoundTrace uses compact waveform/log-mel encoders and simplified fusion, not the official AVSBench VGGish/TPAVI pipeline. Its outputs are not official benchmark results. The API is local and stores jobs in process memory; it returns a sampled-frame mask rather than a complete video timeline.
+SoundTrace uses compact waveform/log-mel encoders and simplified fusion, not the official AVSBench VGGish/TPAVI pipeline. Its outputs are not official benchmark results. Prediction jobs and masks persist under `artifacts/jobs`; the API processes a configurable sampled-frame timeline (2 FPS by default). It still uses in-process background execution, so a process restart during active inference does not resume that work.

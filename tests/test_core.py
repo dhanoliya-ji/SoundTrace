@@ -1,5 +1,6 @@
 import torch
 
+from soundtrace.api import get_masks, get_prediction, write_job
 from soundtrace.cli import avsbench_f_measure, f_measure_curves, metric
 from soundtrace.data import audio_window, shift_log_mel, synthetic_batch, validate_manifest
 from soundtrace.model import SoundTraceNet
@@ -135,3 +136,15 @@ def test_decode_audio_reports_missing_ffmpeg_or_track(tmp_path):
     from soundtrace.data import decode_audio
     with pytest.raises((RuntimeError, ValueError)):
         decode_audio(tmp_path/'not_a_media_file.mp4')
+
+
+def test_prediction_job_and_mask_timeline_are_persisted(tmp_path, monkeypatch):
+    from soundtrace import api
+
+    monkeypatch.setattr(api, "DATA_DIR", tmp_path)
+    job_id = "abc123"
+    write_job(job_id, {"id": job_id, "status": "completed", "fps": 2.0,
+                       "duration": 1.0, "size": [2, 2],
+                       "frames": [{"frame": 0, "timestamp": 0.0, "mask": [[0, 1], [1, 0]]}]})
+    assert get_prediction(job_id)["frame_count"] == 1
+    assert get_masks(job_id)["frames"][0]["mask"] == [[0, 1], [1, 0]]

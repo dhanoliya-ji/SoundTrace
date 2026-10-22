@@ -50,7 +50,7 @@ Training expects a reviewed JSONL manifest containing `mask`, `video_id`, and `t
 
 ## API
 
-`GET /api/v1/health`, `/dataset/status`, `/model/status`; `POST /predictions` accepts a video upload and queues in-process background inference; `GET /predictions/{id}` returns job status/result. Local jobs are process-memory-backed and are not durable across restart. Uploads are size-limited and removed after processing. Configure a trained checkpoint with `SOUNDTRACE_CHECKPOINT`.
+`GET /api/v1/health`, `/dataset/status`, `/model/status`; `POST /predictions` accepts a video upload and queues background inference; `GET /predictions/{id}` returns persisted job status, while `GET /predictions/{id}/masks` returns sampled masks across the clip. Jobs persist on disk under `artifacts/jobs` (configurable with `SOUNDTRACE_JOB_DIR`). Uploads are size-limited and removed after processing. Inference samples frames at 2 FPS by default; set `SOUNDTRACE_INFERENCE_FPS` to change the sampling rate. Configure a trained checkpoint with `SOUNDTRACE_CHECKPOINT`.
 
 ## Design and research
 
@@ -62,7 +62,7 @@ For current implementation status, verification limits, and the next steps requi
 
 ## Limitations
 
-The current data interface is a generic reviewed JSONL manifest, not a verified parser for every official AVSBench release. Both compact encoders initialize randomly; meaningful performance requires training on correctly aligned licensed examples. The initial prediction API returns a sampled frame mask, not a persistent multi-frame video result. Local API jobs are in memory only. User media should be treated as sensitive.
+The current data interface is a generic reviewed JSONL manifest, not a verified parser for every official AVSBench release. Both compact encoders initialize randomly; meaningful performance requires training on correctly aligned licensed examples. Prediction returns a sampled mask timeline across the clip and stores API job state on disk locally. Frame sampling can miss brief motion; increase `SOUNDTRACE_INFERENCE_FPS` when finer temporal coverage is needed. User media should be treated as sensitive.
 
 ## Attribution
 
