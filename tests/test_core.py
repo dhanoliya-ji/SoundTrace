@@ -138,6 +138,21 @@ def test_decode_audio_reports_missing_ffmpeg_or_track(tmp_path):
         decode_audio(tmp_path/'not_a_media_file.mp4')
 
 
+def test_decode_audio_uses_available_ffmpeg_for_waveform_input(tmp_path):
+    import wave
+
+    from soundtrace.data import decode_audio
+
+    source = tmp_path / "short.wav"
+    with wave.open(str(source), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(16000)
+        audio.writeframes(bytes(1600 * 2))
+    decoded = decode_audio(source, 16000)
+    assert decoded.shape == (1600,)
+
+
 def test_prediction_job_and_mask_timeline_are_persisted(tmp_path, monkeypatch):
     from soundtrace import api
 
@@ -186,11 +201,28 @@ def test_avatar_archive_conversion_builds_polygon_masks_and_pairs_zero_padded_vi
         archive.write(frame_path, "sample_00012/00005.jpg")
     with zipfile.ZipFile(downloads / "video.zip", "w") as archive:
         archive.writestr("video/sample_00012.mp4", b"test-video-placeholder")
+        archive.writestr("video/unrelated_00001.mp4", b"unused-video-placeholder")
 
-    result = build_avatar_manifest(root, tmp_path / "avatar.jsonl")
+    result = build_avatar_manifest(root, tmp_path / "avatar.jsonl", max_videos=1)
     rows = read_manifest(tmp_path / "avatar.jsonl")
     assert result["valid"] and result["records"] == 1
     assert rows[0]["video_id"] == "sample_12" and rows[0]["timestamp"] == 0.5
     assert validate_manifest(rows, tmp_path / "avatar.jsonl")["valid"]
+    assert not (root / "video" / "unrelated_00001.mp4").exists()
     generated_mask = Image.open(rows[0]["mask"])
     assert generated_mask.getpixel((5, 5)) == 255 and generated_mask.getpixel((0, 0)) == 0
+
+
+def test_avatar_archive_extraction_rejects_parent_traversal(tmp_path):
+    import zipfile
+
+    import pytest
+
+    from soundtrace.data import _safe_extract
+
+    archive_path = tmp_path / "malicious.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("../outside.txt", "not allowed")
+    with pytest.raises(ValueError, match="Unsafe path"):
+        _safe_extract(archive_path, tmp_path / "extracted")
+    assert not (tmp_path / "outside.txt").exists()

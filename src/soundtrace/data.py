@@ -7,7 +7,7 @@ import json
 import pickle
 import zipfile
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import numpy as np
 import torch
@@ -104,16 +104,24 @@ def build_avsbench_manifest(root: Path, output: Path, task: str) -> dict:
             "manifest": str(output), "valid": bool(rows) and not errors}
 
 
-def _safe_extract(archive: Path, destination: Path) -> None:
+def _safe_extract(archive: Path, destination: Path, members: set[str] | None = None) -> None:
     """Extract a public dataset archive while rejecting paths outside its root."""
     destination.mkdir(parents=True, exist_ok=True)
-    root = destination.resolve()
     with zipfile.ZipFile(archive) as bundle:
         for member in bundle.infolist():
-            target = (destination / member.filename).resolve()
-            if target != root and root not in target.parents:
+            # ZIP paths use forward slashes. Reject alternate separators too, so
+            # Windows cannot reinterpret a validated name as a traversal path.
+            if "\\" in member.filename:
                 raise ValueError(f"Unsafe path in dataset archive {archive.name}: {member.filename}")
-        bundle.extractall(destination)
+            relative = PurePosixPath(member.filename)
+            if relative.is_absolute() or ".." in relative.parts or (relative.parts and ":" in relative.parts[0]):
+                raise ValueError(f"Unsafe path in dataset archive {archive.name}: {member.filename}")
+        if members is None:
+            bundle.extractall(destination)
+        else:
+            for member in bundle.infolist():
+                if member.filename in members:
+                    bundle.extract(member, destination)
 
 
 def build_avatar_manifest(root: Path, output: Path, max_videos: int | None = None) -> dict:
@@ -125,34 +133,53 @@ def build_avatar_manifest(root: Path, output: Path, max_videos: int | None = Non
     video_archive = root / "downloads" / "video.zip"
     if not metadata_dir.exists() and metadata_archive.is_file():
         _safe_extract(metadata_archive, metadata_dir)
-    if not video_dir.exists() and video_archive.is_file():
-        _safe_extract(video_archive, root)
-    if not metadata_dir.is_dir() or not video_dir.is_dir():
-        raise ValueError("AVATAR requires downloads/metadata.zip and downloads/video.zip or extracted metadata/ and video/ folders")
+    if not metadata_dir.is_dir():
+        raise ValueError("AVATAR requires downloads/metadata.zip or an extracted metadata/ folder")
 
     annotations = sorted(metadata_dir.rglob("*.json"))
     def canonical_video_id(value: str) -> str:
         head, separator, tail = value.rpartition("_")
         return f"{head}_{int(tail)}" if separator and tail.isdigit() else value
 
-    video_paths = {canonical_video_id(path.stem): path for path in video_dir.glob("*.mp4")}
-    all_records, errors = [], []
-    for annotation_path in annotations:
-        try:
-            record = json.loads(annotation_path.read_text(encoding="utf-8"))
-            video_id = str(record["video_id"])
-        except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
-            errors.append({"annotation": str(annotation_path), "error": f"could not read annotation: {exc}"})
-            continue
-        all_records.append((annotation_path, record, video_id))
-
-    video_ids = sorted({item[2] for item in all_records})
+    video_ids = sorted({canonical_video_id(path.parent.name) for path in annotations})
     if max_videos is not None:
         if max_videos < 1:
             raise ValueError("--max-videos must be at least 1")
         video_ids = sorted(video_ids, key=lambda value: hashlib.sha256(value.encode()).digest())[:max_videos]
     selected_ids = set(video_ids)
-    selected = [item for item in all_records if item[2] in selected_ids]
+    selected_annotations = [path for path in annotations
+                            if canonical_video_id(path.parent.name) in selected_ids]
+    selected, errors = [], []
+    for annotation_path in selected_annotations:
+        try:
+            record = json.loads(annotation_path.read_text(encoding="utf-8"))
+            video_id = canonical_video_id(str(record["video_id"]))
+        except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+            errors.append({"annotation": str(annotation_path), "error": f"could not read annotation: {exc}"})
+            continue
+        selected.append((annotation_path, record, video_id))
+
+    if video_archive.is_file():
+        if max_videos is None:
+            _safe_extract(video_archive, root)
+        else:
+            def canonical_stem(value: str) -> str:
+                head, separator, tail = value.rpartition("_")
+                return f"{head}_{int(tail)}" if separator and tail.isdigit() else value
+
+            selected_canonical = {canonical_stem(value) for value in selected_ids}
+            with zipfile.ZipFile(video_archive) as bundle:
+                matching_members = {
+                    member.filename for member in bundle.infolist()
+                    if member.filename.lower().endswith(".mp4")
+                    and canonical_stem(Path(member.filename).stem) in selected_canonical
+                }
+            if len(matching_members) < len(selected_canonical):
+                raise ValueError("AVATAR video archive is missing one or more videos selected for the manifest")
+            _safe_extract(video_archive, root, matching_members)
+    if not video_dir.is_dir():
+        raise ValueError("AVATAR video archive did not produce the expected video/ folder")
+    video_paths = {canonical_video_id(path.stem): path for path in video_dir.glob("*.mp4")}
 
     rows = []
     from PIL import ImageDraw

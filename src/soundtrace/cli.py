@@ -270,7 +270,11 @@ def main():
     args=parser.parse_args(); data_root=Path(os.environ.get("SOUNDTRACE_DATA_DIR",ROOT/"data"/"raw")); artifacts=ROOT/"artifacts"
     if args.command=="doctor":
         import importlib.util
-        print(json.dumps({"python":__import__("sys").version.split()[0],"torch":torch.__version__,"cuda":torch.cuda.is_available(),"ffmpeg":__import__("shutil").which("ffmpeg"),"dataset_root_exists":data_root.exists(),"optional":{x:bool(importlib.util.find_spec(x)) for x in ["fastapi","cv2","yaml"]}},indent=2))
+        ffmpeg=__import__("shutil").which("ffmpeg"); ffmpeg_source="system" if ffmpeg else None
+        if ffmpeg is None and importlib.util.find_spec("imageio_ffmpeg"):
+            import imageio_ffmpeg
+            ffmpeg=imageio_ffmpeg.get_ffmpeg_exe(); ffmpeg_source="imageio-ffmpeg"
+        print(json.dumps({"python":__import__("sys").version.split()[0],"torch":torch.__version__,"cuda":torch.cuda.is_available(),"ffmpeg":ffmpeg,"ffmpeg_source":ffmpeg_source,"dataset_root_exists":data_root.exists(),"optional":{x:bool(importlib.util.find_spec(x)) for x in ["fastapi","cv2","yaml"]}},indent=2))
     elif args.command=="dataset-check":
         from .data import discover
         d=discover(data_root); print(json.dumps({"root":str(data_root),"available":data_root.exists(),"video_count":len(d["videos"]),"image_count":len(d["masks"]),"note":"Image files are candidate annotations and require release-specific review."},indent=2))
