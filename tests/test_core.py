@@ -148,3 +148,37 @@ def test_prediction_job_and_mask_timeline_are_persisted(tmp_path, monkeypatch):
                        "frames": [{"frame": 0, "timestamp": 0.0, "mask": [[0, 1], [1, 0]]}]})
     assert get_prediction(job_id)["frame_count"] == 1
     assert get_masks(job_id)["frames"][0]["mask"] == [[0, 1], [1, 0]]
+
+
+def test_avatar_archive_conversion_builds_polygon_masks_and_pairs_zero_padded_video_ids(tmp_path):
+    import json
+    import zipfile
+
+    from PIL import Image
+
+    from soundtrace.data import build_avatar_manifest, read_manifest, validate_manifest
+
+    root = tmp_path / "avatar"
+    downloads = root / "downloads"
+    downloads.mkdir(parents=True)
+    annotation = {
+        "video_id": "sample_12", "frame_number": 5, "original_width": 16,
+        "original_height": 16, "fps": 10.0, "duration": 2.0,
+        "annotations": [{"segmentation": [[2, 2, 12, 2, 12, 12, 2, 12]],
+                          "task": "Single-Sound", "audio_visual_category": "bell"}],
+    }
+    frame_path = tmp_path / "frame.jpg"
+    Image.new("RGB", (16, 16)).save(frame_path)
+    with zipfile.ZipFile(downloads / "metadata.zip", "w") as archive:
+        archive.writestr("sample_00012/00005.json", json.dumps(annotation))
+        archive.write(frame_path, "sample_00012/00005.jpg")
+    with zipfile.ZipFile(downloads / "video.zip", "w") as archive:
+        archive.writestr("video/sample_00012.mp4", b"test-video-placeholder")
+
+    result = build_avatar_manifest(root, tmp_path / "avatar.jsonl")
+    rows = read_manifest(tmp_path / "avatar.jsonl")
+    assert result["valid"] and result["records"] == 1
+    assert rows[0]["video_id"] == "sample_12" and rows[0]["timestamp"] == 0.5
+    assert validate_manifest(rows, tmp_path / "avatar.jsonl")["valid"]
+    generated_mask = Image.open(rows[0]["mask"])
+    assert generated_mask.getpixel((5, 5)) == 255 and generated_mask.getpixel((0, 0)) == 0

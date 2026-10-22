@@ -29,7 +29,7 @@ To run the backend in PowerShell (from the repository root): `uvicorn soundtrace
 
 ## Dataset
 
-Request AVSBench-object access using the official project instructions; review the dataset license, source media terms, and attribution requirements first. Do not commit acquired data or checkpoints. Set `SOUNDTRACE_DATA_DIR` to the acquired root, then build an S4 or MS3 manifest using its matching config. The adapter follows the official loader paths and emits processed-frame/log-mel records. Inspect the generated manifest and reconcile it with your release before training.
+The project supports AVSBench S4/MS3 and the public AVATAR audio-visual localization dataset. AVATAR is published as CC BY 4.0 and offers direct video and annotation archives; it is not the same protocol or official split as AVSBench. Review the dataset card and source-media terms before use, provide attribution, and do not commit acquired data or checkpoints. Place AVATAR's `video.zip` and `metadata.zip` under `data/raw/AVATAR/downloads/`; `build-manifest --task avatar` extracts them safely, converts polygon masks, and creates a deterministic source-video-level training manifest. The first local run can be limited with `--max-videos 100`.
 
 See `docs/DATASET.md`, `docs/DATASET_TERMS.md`, and `docs/RELATED_WORK.md`.
 
@@ -41,6 +41,8 @@ python -m soundtrace.cli train --config configs/gated_fusion.yaml
 python -m soundtrace.cli evaluate --checkpoint artifacts/checkpoints/best.pt --config configs/baseline.yaml
 python -m soundtrace.cli robustness --checkpoint artifacts/checkpoints/best.pt --config configs/corruption_tests.yaml
 python -m soundtrace.cli study --config configs/s4_baseline.yaml --seeds 7,17,27
+python -m soundtrace.cli build-manifest --config configs/avatar.yaml --task avatar --data-root data/raw/AVATAR --max-videos 100
+python -m soundtrace.cli train --config configs/avatar.yaml
 python -m soundtrace.cli predict --video .\example.mp4 --checkpoint artifacts/checkpoints/best.pt
 ```
 

@@ -6,6 +6,14 @@ Use `python -m soundtrace.cli build-manifest --config configs/s4_baseline.yaml -
 
 `build-manifest` with its default `inventory` task scans candidate files and pairs only matching stems as an inventory aid; those records are marked `review_required` and training rejects them. Do not infer official annotation pairing from filenames alone. Obtain the release using the official project instructions, inspect its readme and annotations, and preserve its source-video-level split.
 
+## AVATAR alternative
+
+AVATAR is a public video-centric audio-visual localization dataset. Its Hugging Face card declares CC BY 4.0 and lists `video.zip` (about 3.8 GB) plus `metadata.zip` (about 1.6 GB), containing MP4 clips and per-frame polygon segmentation annotations. This is a useful openly downloadable alternative for SoundTrace experiments, but its protocol differs from AVSBench and the release does not provide an official train/validation/test split. The project assigns deterministic splits by video ID; do not present these as AVSBench results or AVATAR's official benchmark metrics.
+
+Download the two files from the [AVATAR dataset page](https://huggingface.co/datasets/mipal/AVATAR) into `data/raw/AVATAR/downloads/`. Then build the manifest with `python -m soundtrace.cli build-manifest --config configs/avatar.yaml --task avatar --data-root data/raw/AVATAR`. It extracts the archives, rasterizes polygon masks, pairs the metadata frame with its source clip, and writes `data/manifests/avatar.jsonl`. Use `--max-videos 100` for a quick subset. All dataset files and generated masks stay ignored under `data/raw`; do not push them to the project repository.
+
+The Hugging Face card labels the dataset CC BY 4.0. The underlying source clips may also carry source-platform or third-party rights, so check source-media terms for the intended use and include attribution. The dataset is a research resource; this note is not a legal determination.
+
 Training records may use processed `frame` images plus an `audio_features` file and `audio_index`, or a raw `video` path with FFmpeg-decoded waveform audio. The AVSBench adapter consumes its five-clip log-mel features directly; generic waveform manifests use SoundTrace's compact waveform encoder. Neither path reproduces the official VGGish model, image normalization, TPAVI fusion, training objective, or official metric in full. This is a research prototype, not an official AVSBench reproduction. `load_mask` converts nonzero grayscale pixels to binary foreground using nearest-neighbor resizing. Class labels and AVSS semantics are not implemented.
 
 Split by source video before deriving frames, crops, windows, or caches. Check unique `video_id` sets for overlap. Dataset readiness and all missing/corrupt/unmatched items must be reviewed before training. Set `SOUNDTRACE_DATA_DIR` or use the manifest config. Do not commit source media, annotations, or derived restricted assets.

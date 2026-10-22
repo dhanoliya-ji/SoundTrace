@@ -16,6 +16,7 @@ import yaml
 from torch.nn import functional as F
 
 from .data import (
+    build_avatar_manifest,
     build_avsbench_manifest,
     build_manifest,
     load_record,
@@ -205,7 +206,11 @@ def train(cfg, config_path):
             curve=f_measure_curves(logits,y)[0]
             if curve is not None: f_curves.setdefault(str(row["video_id"]),[]).append(curve)
     run_id=uuid.uuid4().hex[:12]
-    report={"evaluation_id":run_id,"kind":"real_data_experiment",**run_provenance(manifest,str(config_path),int(cfg.get("seed",7))),"variant":"gated" if model.gated else "baseline","split_fingerprint":split_fingerprint(splits),"split_video_counts":{k:len({str(r['video_id']) for r in v}) for k,v in splits.items()},"best_validation_iou":best,"test_mean_iou":float(np.mean([x["iou"] for x in scores])),"test_f1_at_0_5":float(np.mean([x["f1"] for x in scores])),"test_avsbench_f_measure":avsbench_f_measure(f_curves),"test_examples":scores,"history":history,"duration_seconds":time.time()-start,"checkpoint":project_relative(checkpoint)}
+    dataset_names={str(row.get("dataset") or row.get("task") or "custom") for row in rows}
+    dataset_name=next(iter(dataset_names)) if len(dataset_names)==1 else "mixed"
+    report={"evaluation_id":run_id,"kind":"real_data_experiment",**run_provenance(manifest,str(config_path),int(cfg.get("seed",7))),"dataset":dataset_name,"evaluation_protocol":"SoundTrace custom source-video split and metrics" if dataset_name=="AVATAR" else "held-out source-video test split","variant":"gated" if model.gated else "baseline","split_fingerprint":split_fingerprint(splits),"split_video_counts":{k:len({str(r['video_id']) for r in v}) for k,v in splits.items()},"best_validation_iou":best,"test_mean_iou":float(np.mean([x["iou"] for x in scores])),"test_f1_at_0_5":float(np.mean([x["f1"] for x in scores])),"test_examples":scores,"history":history,"duration_seconds":time.time()-start,"checkpoint":project_relative(checkpoint)}
+    if dataset_name in {"s4", "ms3"}:
+        report["test_avsbench_f_measure"] = avsbench_f_measure(f_curves)
     save_report(run_id,report); print(json.dumps(report,indent=2)); return report
 
 
@@ -233,6 +238,8 @@ def run_study(cfg, config_path, seeds):
                       "test_iou_delta": gated["test_mean_iou"] - baseline["test_mean_iou"]})
     deltas = [pair["test_iou_delta"] for pair in pairs]
     report = {"evaluation_id": study_id, "kind": "paired_study", "config": Path(config_path).name,
+              "dataset": runs["baseline"].get("dataset", "custom"),
+              "evaluation_protocol": runs["baseline"].get("evaluation_protocol"),
               "manifest_sha256": pairs and runs["baseline"]["manifest_sha256"],
               "seeds": seeds, "pairs": pairs, "mean_test_iou_delta": float(np.mean(deltas)),
               "std_test_iou_delta": float(np.std(deltas, ddof=1)) if len(deltas) > 1 else None,
@@ -252,9 +259,10 @@ def main():
     for name in ("build-manifest","preprocess","train","study","evaluate","robustness"):
         p=sub.add_parser(name); p.add_argument("--config",required=True)
         if name=="build-manifest":
-            p.add_argument("--task",choices=("inventory","s4","ms3"),default="inventory")
+            p.add_argument("--task",choices=("inventory","s4","ms3","avatar"),default="inventory")
             p.add_argument("--data-root")
             p.add_argument("--output")
+            p.add_argument("--max-videos",type=int,help="optional AVATAR video cap for a quick local run")
         if name in {"evaluate","robustness"}: p.add_argument("--checkpoint",required=True)
         if name == "study": p.add_argument("--seeds",default="7,17,27")
     p=sub.add_parser("predict"); p.add_argument("--video",required=True); p.add_argument("--checkpoint")
@@ -270,7 +278,12 @@ def main():
     elif args.command=="build-manifest":
         cfg=load_config(args.config); root=Path(args.data_root or cfg.get("data_root") or data_root)
         out=Path(args.output or cfg.get("output_manifest",f"data/manifests/{args.task}.jsonl")); out=out if out.is_absolute() else ROOT/out
-        result=build_avsbench_manifest(root,out,args.task) if args.task in {"s4","ms3"} else build_manifest(root,out)
+        if args.task == "avatar":
+            result=build_avatar_manifest(root,out,args.max_videos)
+        elif args.task in {"s4","ms3"}:
+            result=build_avsbench_manifest(root,out,args.task)
+        else:
+            result=build_manifest(root,out)
         print(json.dumps(result,indent=2))
         if result.get("valid") is False: raise SystemExit(2)
     elif args.command=="preprocess":
@@ -359,8 +372,10 @@ def main():
                     if curve is not None:
                         condition_curves.setdefault(condition_name,{}).setdefault(str(row["video_id"]),[]).append(curve)
                     results.append({"video_id":row["video_id"],"condition":condition_name,**condition,"iou":metric(logits,y),"f1":f1_metric(logits,y),"latency_seconds":elapsed})
-        condition_summary={name:{"videos_with_foreground":len(videos),"mean_avsbench_f_measure":avsbench_f_measure(videos)} for name,videos in condition_curves.items()}
-        run_id=uuid.uuid4().hex[:12]; report={"evaluation_id":run_id,"kind":args.command,**run_provenance(path,args.config,int(cfg.get("seed",7))),"checkpoint":Path(args.checkpoint).name,"variant":"gated" if model.gated else "baseline","split_fingerprint":split_fingerprint(splits),"split_video_counts":{k:len({str(r['video_id']) for r in v}) for k,v in splits.items()},"evaluated_split":"test","results":results,"condition_summary":condition_summary,"mean_iou":float(np.mean([r["iou"] for r in results])),"mean_f1":float(np.mean([r["f1"] for r in results])),"mean_latency_seconds":float(np.mean([r["latency_seconds"] for r in results]))}; save_report(run_id,report); print(json.dumps(report,indent=2))
+        condition_summary={name:{"videos_with_foreground":len(videos),"mean_f_measure_beta2_0_3":avsbench_f_measure(videos)} for name,videos in condition_curves.items()}
+        dataset_names={str(row.get("dataset") or row.get("task") or "custom") for row in rows}
+        dataset_name=next(iter(dataset_names)) if len(dataset_names)==1 else "mixed"
+        run_id=uuid.uuid4().hex[:12]; report={"evaluation_id":run_id,"kind":args.command,**run_provenance(path,args.config,int(cfg.get("seed",7))),"dataset":dataset_name,"evaluation_protocol":"SoundTrace custom source-video split and metrics" if dataset_name=="AVATAR" else "held-out source-video test split","checkpoint":Path(args.checkpoint).name,"variant":"gated" if model.gated else "baseline","split_fingerprint":split_fingerprint(splits),"split_video_counts":{k:len({str(r['video_id']) for r in v}) for k,v in splits.items()},"evaluated_split":"test","results":results,"condition_summary":condition_summary,"mean_iou":float(np.mean([r["iou"] for r in results])),"mean_f1":float(np.mean([r["f1"] for r in results])),"mean_latency_seconds":float(np.mean([r["latency_seconds"] for r in results]))}; save_report(run_id,report); print(json.dumps(report,indent=2))
     elif args.command=="predict":
         import cv2
         from PIL import Image

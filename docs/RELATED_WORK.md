@@ -6,6 +6,12 @@ AVSBench establishes pixel-level sounding-object segmentation, with semi-supervi
 
 Primary sources: [AVSBench repository](https://github.com/OpenNLPLab/AVSBench), [official dataloader](https://github.com/OpenNLPLab/AVSBench/blob/main/avs_scripts/avs_ms3/dataloader.py), [ECCV 2022 paper](https://arxiv.org/abs/2207.05042), [project page](https://opennlplab.github.io/AVSBench/).
 
+## AVATAR video-centric localization
+
+AVATAR adds temporal, instance-level annotations for single-sound, mixed-sound, multi-entity, and off-screen scenes. Its publicly hosted release contains video clips and polygon instance masks, and its dataset card declares CC BY 4.0. SoundTrace can merge visible-source instance polygons into a binary mask and trains on a custom source-video split. This adaptation is useful for an auxiliary local experiment but does not reproduce AVATAR's CIoU/AUC benchmark evaluator or its official test protocol.
+
+Primary sources: [AVATAR dataset card and files](https://huggingface.co/datasets/mipal/AVATAR), [project page](https://hahyeon610.github.io/Video-centric_Audio_Visual_Localization/), [ICCV 2025 paper](https://openaccess.thecvf.com/content/ICCV2025/papers/Choi_Whats_Making_That_Sound_Right_Now_Video-centric_Audio_Visual_Localization_ICCV_2025_paper.pdf).
+
 ## Generalizable audio-visual segmentation
 
 The AAAI 2024 Generalizable Audio-Visual Segmentation work introduces semantic-aware audio prompts and a correlation adapter around a visual foundation model (SAM), and reports unseen-class and cross-dataset settings. Its V3 metadata creates seen/unseen and few-shot splits from AVSBench versions. This establishes that generalization and cross-modal adaptation are already studied; SoundTrace's gate is therefore not claimed as novel. SoundTrace does not reproduce GAVS.

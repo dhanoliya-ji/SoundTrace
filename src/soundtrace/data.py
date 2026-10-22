@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import pickle
+import zipfile
 from functools import lru_cache
 from pathlib import Path
 
@@ -102,6 +104,110 @@ def build_avsbench_manifest(root: Path, output: Path, task: str) -> dict:
             "manifest": str(output), "valid": bool(rows) and not errors}
 
 
+def _safe_extract(archive: Path, destination: Path) -> None:
+    """Extract a public dataset archive while rejecting paths outside its root."""
+    destination.mkdir(parents=True, exist_ok=True)
+    root = destination.resolve()
+    with zipfile.ZipFile(archive) as bundle:
+        for member in bundle.infolist():
+            target = (destination / member.filename).resolve()
+            if target != root and root not in target.parents:
+                raise ValueError(f"Unsafe path in dataset archive {archive.name}: {member.filename}")
+        bundle.extractall(destination)
+
+
+def build_avatar_manifest(root: Path, output: Path, max_videos: int | None = None) -> dict:
+    """Convert AVATAR polygon annotations and sampled frames to SoundTrace JSONL."""
+    root = root.resolve()
+    metadata_dir = root / "metadata"
+    video_dir = root / "video"
+    metadata_archive = root / "downloads" / "metadata.zip"
+    video_archive = root / "downloads" / "video.zip"
+    if not metadata_dir.exists() and metadata_archive.is_file():
+        _safe_extract(metadata_archive, metadata_dir)
+    if not video_dir.exists() and video_archive.is_file():
+        _safe_extract(video_archive, root)
+    if not metadata_dir.is_dir() or not video_dir.is_dir():
+        raise ValueError("AVATAR requires downloads/metadata.zip and downloads/video.zip or extracted metadata/ and video/ folders")
+
+    annotations = sorted(metadata_dir.rglob("*.json"))
+    def canonical_video_id(value: str) -> str:
+        head, separator, tail = value.rpartition("_")
+        return f"{head}_{int(tail)}" if separator and tail.isdigit() else value
+
+    video_paths = {canonical_video_id(path.stem): path for path in video_dir.glob("*.mp4")}
+    all_records, errors = [], []
+    for annotation_path in annotations:
+        try:
+            record = json.loads(annotation_path.read_text(encoding="utf-8"))
+            video_id = str(record["video_id"])
+        except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+            errors.append({"annotation": str(annotation_path), "error": f"could not read annotation: {exc}"})
+            continue
+        all_records.append((annotation_path, record, video_id))
+
+    video_ids = sorted({item[2] for item in all_records})
+    if max_videos is not None:
+        if max_videos < 1:
+            raise ValueError("--max-videos must be at least 1")
+        video_ids = sorted(video_ids, key=lambda value: hashlib.sha256(value.encode()).digest())[:max_videos]
+    selected_ids = set(video_ids)
+    selected = [item for item in all_records if item[2] in selected_ids]
+
+    rows = []
+    from PIL import ImageDraw
+
+    mask_root = root / "soundtrace_masks"
+    for annotation_path, record, video_id in selected:
+        image_path = annotation_path.with_suffix(".jpg")
+        video_path = video_paths.get(canonical_video_id(video_id))
+        if not image_path.is_file() or video_path is None or not video_path.is_file():
+            errors.append({"video_id": video_id,
+                           "error": f"missing paired frame or source video for {image_path.name}"})
+            continue
+        width, height = int(record.get("original_width", 640)), int(record.get("original_height", 360))
+        mask_image = Image.new("L", (width, height), 0)
+        draw = ImageDraw.Draw(mask_image)
+        has_foreground = False
+        for instance in record.get("annotations", []):
+            polygons = instance.get("segmentation") or []
+            if polygons and isinstance(polygons[0], (int, float)):
+                polygons = [polygons]
+            for polygon in polygons:
+                points = list(zip(polygon[0::2], polygon[1::2]))
+                if len(points) >= 3:
+                    draw.polygon(points, fill=255)
+                    has_foreground = True
+        frame_number = int(record["frame_number"])
+        mask_path = mask_root / video_id / f"{frame_number:05d}.png"
+        mask_path.parent.mkdir(parents=True, exist_ok=True)
+        mask_image.save(mask_path)
+        fps = float(record.get("fps", 0.0))
+        duration = float(record.get("duration", 0.0))
+        if fps <= 0:
+            errors.append({"video_id": video_id, "frame_number": frame_number, "error": "missing valid fps"})
+            continue
+        timestamp = frame_number / fps
+        if duration and not 0 <= timestamp <= duration:
+            errors.append({"video_id": video_id, "frame_number": frame_number,
+                           "error": f"timestamp {timestamp} outside duration {duration}"})
+            continue
+        rows.append({"video_id": video_id, "frame": str(image_path.resolve()),
+                     "video": str(video_path.resolve()), "mask": str(mask_path.resolve()),
+                     "timestamp": timestamp, "frame_number": frame_number,
+                     "fps": fps, "duration": duration,
+                     "category": sorted({str(item.get("audio_visual_category", ""))
+                                         for item in record.get("annotations", [])}),
+                     "scenario": sorted({str(item.get("task", ""))
+                                          for item in record.get("annotations", [])}),
+                     "has_foreground": has_foreground, "dataset": "AVATAR"})
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    return {"task": "avatar", "records": len(rows), "videos": len({r["video_id"] for r in rows}),
+            "errors": errors, "manifest": str(output), "valid": bool(rows) and not errors,
+            "note": "AVATAR has no official train/validation/test split; SoundTrace assigns deterministic source-video-level splits."}
+
+
 def read_manifest(path: Path) -> list[dict]:
     if not path.exists():
         return []
@@ -110,13 +216,21 @@ def read_manifest(path: Path) -> list[dict]:
 
 def decode_audio(path: str | Path, sample_rate: int = 16000) -> torch.Tensor:
     """Decode/resample a video's audio with OpenCV-independent FFmpeg subprocess output."""
+    import shutil
     import subprocess
-    command = ["ffmpeg", "-v", "error", "-i", str(path), "-vn", "-ac", "1", "-ar", str(sample_rate),
+
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        try:
+            import imageio_ffmpeg
+
+            ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        except ImportError as exc:
+            raise RuntimeError("FFmpeg is required for audio decoding. Install FFmpeg or imageio-ffmpeg.") from exc
+    command = [ffmpeg, "-v", "error", "-i", str(path), "-vn", "-ac", "1", "-ar", str(sample_rate),
                "-f", "f32le", "pipe:1"]
     try:
         result = subprocess.run(command, check=True, capture_output=True)
-    except FileNotFoundError as exc:
-        raise RuntimeError("FFmpeg is required for audio decoding. Install FFmpeg and add it to PATH.") from exc
     except subprocess.CalledProcessError as exc:
         message = exc.stderr.decode("utf-8", errors="replace")[-500:]
         raise ValueError(f"Audio decode failed for {Path(path).name}: {message}") from exc
