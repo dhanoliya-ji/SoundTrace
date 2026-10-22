@@ -6,7 +6,8 @@ SoundTrace is a local research prototype for predicting image regions associated
 
 ## Current status
 
-- The AVSBench dataset and pretrained weights are not included. No real-data training or benchmark result is claimed.
+- A 100-video AVATAR pilot was downloaded, converted to 483 annotated frames, and used for paired three-seed training plus held-out corruption checks. These custom pilot results are not official AVATAR or AVSBench benchmark results.
+- The gated pilot checkpoint is stored locally at `artifacts/checkpoints/best.pt` for dashboard inference; data, checkpoints, and reports are excluded from Git.
 - The PyTorch network is a trainable, spatial convolutional audiovisual segmentation model. Its image/audio encoders initialize randomly unless an explicitly configured model provides weights; it does not silently download anything.
 - The gate is an adaptive learned fusion path, not a calibrated confidence score.
 - The synthetic smoke path checks that data, model, metrics and checkpoint code execute. It does not validate source localization.
@@ -25,7 +26,7 @@ python -m soundtrace.cli dataset-check
 python -m soundtrace.cli build-manifest --config configs/smoke_test.yaml
 ```
 
-To run the backend in PowerShell (from the repository root): `uvicorn soundtrace.api:app --app-dir src --reload`. To run the UI, open another PowerShell window, `cd frontend`, run `npm install`, then `npm run dev`. Set `VITE_API_BASE_URL=http://127.0.0.1:8000` in `frontend/.env.local` if needed. The dashboard is served by Vite at its displayed local URL. With no checkpoint it reports unavailability and will not pretend random weights are trained. FFmpeg must be installed and on `PATH` for raw-video audio inference/training; AVSBench manifests use prepared log-mel features.
+To run the backend in PowerShell (from the repository root): `uvicorn soundtrace.api:app --app-dir src --reload`. To run the UI, open another PowerShell window, `cd frontend`, run `npm install`, then `npm run dev`. Set `VITE_API_BASE_URL=http://127.0.0.1:8000` in `frontend/.env.local` if needed. The dashboard is served by Vite at its displayed local URL. With no checkpoint it reports unavailability and will not pretend random weights are trained. Raw-video audio uses system FFmpeg when available or the bundled `imageio-ffmpeg` decoder; AVSBench manifests use prepared log-mel features.
 
 ## Dataset
 
@@ -39,7 +40,7 @@ See `docs/DATASET.md`, `docs/DATASET_TERMS.md`, and `docs/RELATED_WORK.md`.
 python -m soundtrace.cli train --config configs/baseline.yaml
 python -m soundtrace.cli train --config configs/gated_fusion.yaml
 python -m soundtrace.cli evaluate --checkpoint artifacts/checkpoints/best.pt --config configs/baseline.yaml
-python -m soundtrace.cli robustness --checkpoint artifacts/checkpoints/best.pt --config configs/corruption_tests.yaml
+python -m soundtrace.cli robustness --checkpoint artifacts/checkpoints/best.pt --config configs/avatar_corruption_tests.yaml
 python -m soundtrace.cli study --config configs/s4_baseline.yaml --seeds 7,17,27
 python -m soundtrace.cli build-manifest --config configs/avatar.yaml --task avatar --data-root data/raw/AVATAR --max-videos 100
 python -m soundtrace.cli train --config configs/avatar.yaml
@@ -47,6 +48,8 @@ python -m soundtrace.cli predict --video .\example.mp4 --checkpoint artifacts/ch
 ```
 
 `study` trains baseline and gated variants with matched settings and source-video splits for each seed, saves a separate checkpoint per run, and reports paired test-IoU deltas with their across-seed standard deviation. It requires a valid reviewed manifest and can take substantial time.
+
+The AVATAR pilot paired study can be reproduced with `python -m soundtrace.cli study --config configs/avatar.yaml --seeds 7,17,27`. Its robustness suite is `configs/avatar_corruption_tests.yaml`; evaluation reads the checkpoint's recorded seed to use the matching held-out split.
 
 Training expects a reviewed JSONL manifest containing `mask`, `video_id`, and `timestamp`, plus either a `video` path or both `frame` and `audio_features` paths. An optional `split` field may provide `train`, `val`, and `test`; otherwise deterministic source-video splits are assigned and at least three distinct videos are required. Use `build-manifest` with `--task s4` or `--task ms3` for official folder layouts; inventory mode is not train-ready. On CPU use the smoke config; full-resolution or full-data work may exceed laptop resources. Evaluation writes observed metrics to `artifacts/`. Checkpoints are selected on validation only.
 

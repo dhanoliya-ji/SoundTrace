@@ -177,6 +177,35 @@ def test_api_uses_default_best_checkpoint_path(tmp_path, monkeypatch):
     assert api.model_status()["checkpoint"] == "best.pt"
 
 
+def test_dataset_status_reports_validated_manifest_counts(tmp_path, monkeypatch):
+    import json
+
+    from soundtrace import api
+
+    raw = tmp_path / "data" / "raw"
+    raw.mkdir(parents=True)
+    manifest = tmp_path / "data" / "manifests" / "avatar.jsonl"
+    manifest.parent.mkdir(parents=True)
+    frame = tmp_path / "frame.jpg"
+    mask = tmp_path / "mask.png"
+    video = tmp_path / "video.mp4"
+    for path in (frame, mask, video):
+        path.write_bytes(b"fixture")
+    manifest.write_text(json.dumps({"video_id": "clip-1", "timestamp": 0,
+                                    "frame": str(frame), "mask": str(mask),
+                                    "video": str(video), "dataset": "AVATAR"}) + "\n")
+    monkeypatch.setattr(api, "PROJECT_ROOT", tmp_path)
+    monkeypatch.delenv("SOUNDTRACE_DATA_DIR", raising=False)
+    monkeypatch.delenv("SOUNDTRACE_MANIFEST", raising=False)
+
+    result = api.dataset_status()
+    assert result["manifest_valid"]
+    assert result["manifest_records"] == 1
+    assert result["manifest_video_count"] == 1
+    assert result["video_count"] == 1
+    assert result["dataset"] == "AVATAR"
+
+
 def test_avatar_archive_conversion_builds_polygon_masks_and_pairs_zero_padded_video_ids(tmp_path):
     import json
     import zipfile

@@ -13,11 +13,12 @@
 
 ## Current evidence
 
-- 17 Python tests pass and Ruff passes. The frontend production build and API imports were verified earlier; the API's health/status endpoints and checkpoint loading were also checked after training.
+- 18 Python tests pass and Ruff passes. The frontend production build passes. In-process API health/status checks, checkpoint loading, and a real-clip prediction were verified; the long-running API process may need a restart to load current code.
 - AVATAR's two public archives are downloaded under `data/raw/AVATAR/downloads/`; both ZIP integrity checks passed. The local dataset card declares CC BY 4.0. Check underlying source-media terms and attribute the dataset authors before sharing or using the media beyond the intended research use.
 - A deterministic 100-video AVATAR pilot manifest contains 483 annotated frames, has no pairing errors, validates successfully, and decodes the source clip's audio. The source-video split is 70 train, 15 validation, and 15 test videos. Manifest: `data/manifests/avatar.jsonl` (ignored by Git).
-- One paired CPU training run completed for seed 7, three epochs per variant. Baseline held-out mean IoU was 0.2811; gated fusion was 0.2787 (delta -0.0024). This one-seed, 15-test-video result is only a pipeline pilot; it does not show a reliable model advantage or benchmark performance. Reports: `artifacts/reports/52a6d5d501dd.json`, `artifacts/reports/9c4a0ec2959a.json`, and `artifacts/reports/992420a666d2.json` (local, ignored files).
-- The gated checkpoint from that run is installed at `artifacts/checkpoints/best.pt` for local API/dashboard inference. A real AVATAR clip upload completed through the prediction API and produced masks for 21 sampled frames. It is a small pilot checkpoint, not a trained production model.
+- A paired CPU study completed for seeds 7, 17, and 27, with three epochs per model and the same 100-video manifest. Paired test-IoU deltas (gated minus baseline) were -0.0024, -0.0497, and +0.0200; mean -0.0107, sample standard deviation 0.0356. This small custom study shows no reliable gated-fusion advantage. Study report: `artifacts/reports/aacf3509d792.json` (local, ignored file).
+- The matched robustness suite completed for baseline and gated checkpoints across all three seeds and 18 named conditions. Descriptively, mean gated-minus-baseline IoU delta averaged -0.0083 over ten audio conditions, +0.0320 over six visual-only conditions, and +0.0540 for the combined condition; variability was substantial across only 15 test videos per split, so these are exploratory results and do not establish robustness. Reports are local under `artifacts/reports/` with IDs `e4f9bc89b84e`, `7a099cbde9c1`, `5f09dd421aea`, `9e64de6c52dd`, `3f855c04dd14`, and `62c4056c35b2`. They record `source_tree_dirty: true` because the checkpoint-seed selection and dashboard/API status updates were in progress during this run.
+- The seed-7 gated checkpoint, selected among the gated pilot runs by validation IoU, is installed at `artifacts/checkpoints/best.pt` for local API/dashboard inference. A real AVATAR clip upload completed through the prediction API and produced masks for 21 sampled frames. This remains a small pilot checkpoint, not a production model.
 - The AVSBench adapter was exercised against generated fixtures and checked against the official public S4/MS3 loader paths, but not against an acquired AVSBench release. No AVSBench dataset or official benchmark result is present.
 - SoundTrace uses compact waveform/log-mel encoders and simplified fusion, not the official AVSBench VGGish/TPAVI pipeline. AVATAR's custom metrics and split are not AVSBench metrics or an official AVATAR protocol.
 - The system FFmpeg binary is absent; `imageio-ffmpeg` provides the bundled decoder fallback. Training ran on CPU (`torch 2.9.1+cpu`); CUDA was unavailable.
@@ -31,13 +32,19 @@ On Windows from the project root:
 .venv\Scripts\python.exe -m soundtrace.cli study --config configs/avatar.yaml --seeds 7
 ```
 
+Run the paired pilot study with all three recorded seeds by changing the last option to `--seeds 7,17,27`. Run the matched corruption suite over the resulting pilot checkpoints with:
+
+```powershell
+Get-ChildItem artifacts\checkpoints -Filter "aacf3509d792-*.pt" | ForEach-Object {
+  .venv\Scripts\python.exe -m soundtrace.cli robustness --config configs/avatar_corruption_tests.yaml --checkpoint $_.FullName
+}
+```
+
 The subset is selected deterministically from video IDs. AVATAR does not provide an official train/validation/test split in this release, so SoundTrace makes source-video-level splits.
 
-## Next work
+## Remaining external work
 
-1. Obtain authorized AVSBench-object access if official AVSBench evaluation is needed, then build and inspect its S4/MS3 manifest and run the matching protocol.
-2. Treat the AVATAR pilot as an engineering baseline. Improve the training recipe, test with multiple seeds and a larger subset, and keep all custom metrics labeled with their split/protocol.
-3. Run robustness evaluations only after reviewing each condition and checkpoint; do not make robustness claims from unrun configurations.
+The only benchmark-specific work blocked by the current workspace is acquiring authorized AVSBench-object data. Once access is granted, build and inspect the S4/MS3 manifest, then run the official split and metric protocol. AVATAR experiments are custom engineering results and must not be described as official AVSBench or AVATAR benchmark scores.
 
 ## Important limits
 

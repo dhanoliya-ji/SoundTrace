@@ -299,12 +299,14 @@ def main():
         except ValueError as exc: raise SystemExit("--seeds must be a comma-separated list of integers") from exc
         run_study(load_config(args.config),args.config,seeds)
     elif args.command in {"evaluate","robustness"}:
-        cfg=load_config(args.config); path=manifest_path(cfg); rows=read_manifest(path); status=validate_manifest(rows,path)
+        cfg=load_config(args.config); model,state=load_checkpoint(args.checkpoint)
+        cfg["seed"] = int(state.get("config", {}).get("seed", cfg.get("seed", 7)))
+        path=manifest_path(cfg); rows=read_manifest(path); status=validate_manifest(rows,path)
         if not status["valid"]: raise SystemExit(json.dumps(status,indent=2))
         splits=split_rows(rows,cfg)
         if not splits["test"]: raise SystemExit("The manifest has no held-out test examples; evaluation never scores training or validation rows.")
         test_rows=splits["test"]
-        model,_=load_checkpoint(args.checkpoint); model.eval(); results=[]
+        model.eval(); results=[]
         if args.command == "robustness":
             conditions = cfg.get("conditions")
             if conditions is None:

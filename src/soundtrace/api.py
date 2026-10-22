@@ -58,9 +58,38 @@ def health():
 @app.get("/api/v1/dataset/status")
 def dataset_status():
     root = configured_path(os.getenv("SOUNDTRACE_DATA_DIR", ""), "data/raw")
-    count = sum(1 for p in root.rglob("*") if p.suffix.lower() in {".mp4", ".mov", ".avi", ".mkv"}) if root.exists() else 0
+    manifest = configured_path(os.getenv("SOUNDTRACE_MANIFEST", ""), "data/manifests/avatar.jsonl")
+    manifest_valid = False
+    manifest_records = 0
+    manifest_video_count = 0
+    dataset_name = None
+    manifest_errors = 0
+    if manifest.is_file():
+        try:
+            from .data import read_manifest, validate_manifest
+
+            rows = read_manifest(manifest)
+            validation = validate_manifest(rows, manifest)
+            manifest_valid = validation["valid"]
+            manifest_records = len(rows)
+            manifest_video_count = len({str(row["video_id"]) for row in rows if "video_id" in row})
+            dataset_names = {str(row["dataset"]) for row in rows if row.get("dataset")}
+            dataset_name = next(iter(dataset_names)) if len(dataset_names) == 1 else None
+            manifest_errors = len(validation["errors"])
+        except (OSError, ValueError, KeyError, TypeError):
+            manifest_errors = 1
+    if manifest_valid:
+        message = f"Validated {dataset_name or 'dataset'} manifest ready for experiments."
+    elif root.exists():
+        message = "Dataset files detected; review and validate a manifest before training."
+    else:
+        message = "Dataset not configured. Follow docs/DATASET_TERMS.md."
+    count = manifest_video_count if manifest_valid else 0
     return {"available": root.exists(), "video_count": count,
-            "message": "Dataset path configured; validate annotations before training." if root.exists() else "Dataset not configured. Follow docs/DATASET_TERMS.md."}
+            "manifest": manifest.name if manifest.is_file() else None,
+            "manifest_valid": manifest_valid, "manifest_records": manifest_records,
+            "manifest_video_count": manifest_video_count, "manifest_errors": manifest_errors,
+            "dataset": dataset_name, "message": message}
 
 
 @app.get("/api/v1/model/status")
