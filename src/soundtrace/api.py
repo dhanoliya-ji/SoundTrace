@@ -143,6 +143,17 @@ def compare_experiment(experiment_id: str):
     if not current.is_file(): raise HTTPException(404, "Experiment not found")
     one = json.loads(current.read_text(encoding="utf-8"))
     candidates = [json.loads(p.read_text(encoding="utf-8")) for p in folder.glob("*.json") if p != current]
-    other = next((x for x in candidates if x.get("variant") and x.get("variant") != one.get("variant") and x.get("test_mean_iou") is not None), None)
+    other = next((x for x in candidates
+                  if x.get("kind") == "real_data_experiment"
+                  and one.get("kind") == "real_data_experiment"
+                  and x.get("variant") and x.get("variant") != one.get("variant")
+                  and x.get("manifest_sha256") == one.get("manifest_sha256")
+                  and x.get("seed") == one.get("seed")
+                  and x.get("split_fingerprint") == one.get("split_fingerprint")
+                  and x.get("split_video_counts") == one.get("split_video_counts")
+                  and x.get("test_mean_iou") is not None
+                  and one.get("test_mean_iou") is not None), None)
     if other is None: raise HTTPException(409, "A completed baseline and gated experiment are both required for comparison")
-    return {"experiment": one, "comparison": other, "test_mean_iou_delta": one["test_mean_iou"] - other["test_mean_iou"]}
+    return {"experiment": one, "comparison": other,
+            "test_mean_iou_delta": one["test_mean_iou"] - other["test_mean_iou"],
+            "comparison_basis": "same manifest, seed, and source-video split"}

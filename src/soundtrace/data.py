@@ -126,6 +126,9 @@ def validate_manifest(rows: list[dict], manifest_path: Path) -> dict:
     errors, seen = [], {}
     if not rows:
         errors.append({"line": 0, "error": "manifest contains no records"})
+    split_presence = ["split" in row for row in rows]
+    if any(split_presence) and not all(split_presence):
+        errors.append({"line": 0, "error": "split must be present on every row or on none of them"})
     for index, row in enumerate(rows, 1):
         if row.get("review_required"):
             errors.append({"line": index, "error": "auto-discovered pairing must be manually reviewed before training"})
@@ -141,6 +144,8 @@ def validate_manifest(rows: list[dict], manifest_path: Path) -> dict:
         group = str(row["video_id"])
         split = row.get("split")
         if split:
+            if split not in {"train", "val", "test"}:
+                errors.append({"line": index, "error": f"invalid split {split!r}; expected train, val, or test"})
             if group in seen and seen[group] != split:
                 errors.append({"line": index, "error": f"video leakage: {group} appears in {seen[group]} and {split}"})
             seen[group] = split

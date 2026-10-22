@@ -1,5 +1,20 @@
-levels: [0.0, 0.1, 0.25, 0.5]
-audio_noise_std: [0.0, 0.01, 0.05]
-audio_video_shift_seconds: [0.0, 0.25, 0.5]
-visual_blur_sigma: [0.0, 1.0, 2.0]
 seed: 7
+conditions:
+  - {name: clean}
+  - {name: audio_noise_001, audio_noise_std: 0.01}
+  - {name: audio_noise_005, audio_noise_std: 0.05}
+  - {name: audio_attenuation_half, audio_attenuation: 0.5}
+  - {name: audio_muted, audio_attenuation: 0.0}
+  - {name: audio_dropout_quarter, audio_dropout_probability: 0.25}
+  - {name: audio_dropout_half, audio_dropout_probability: 0.5}
+  - {name: audio_shift_minus_025, audio_video_shift_seconds: -0.25}
+  - {name: audio_shift_plus_025, audio_video_shift_seconds: 0.25}
+  - {name: audio_shift_minus_050, audio_video_shift_seconds: -0.5}
+  - {name: audio_shift_plus_050, audio_video_shift_seconds: 0.5}
+  - {name: visual_blur_1, visual_blur_sigma: 1.0}
+  - {name: visual_blur_2, visual_blur_sigma: 2.0}
+  - {name: visual_downsample_2, visual_downsample_factor: 2}
+  - {name: visual_downsample_4, visual_downsample_factor: 4}
+  - {name: visual_occlusion_015, visual_occlusion_fraction: 0.15}
+  - {name: visual_occlusion_030, visual_occlusion_fraction: 0.30}
+  - {name: combined_audio_visual, audio_noise_std: 0.05, audio_attenuation: 0.5, visual_blur_sigma: 1.0, visual_occlusion_fraction: 0.15}

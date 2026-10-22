@@ -55,6 +55,8 @@ The falsifiable hypothesis is that learned modality reliability gating retains c
 
 Documents: `docs/ARCHITECTURE.md`, `docs/RESEARCH_PLAN.md`, `docs/EVALUATION_PROTOCOL.md`, `docs/EXPERIMENTS.md`, `docs/MODEL_CARD.md`, `docs/RESPONSIBLE_USE.md`, `docs/REPRODUCIBILITY.md`, `docs/PAPER_TEMPLATE.md`.
 
+For current implementation status, verification limits, and the next steps requiring external data, see `docs/HANDOFF.md`.
+
 ## Limitations
 
 The current data interface is a generic reviewed JSONL manifest, not a verified parser for every official AVSBench release. Both compact encoders initialize randomly; meaningful performance requires training on correctly aligned licensed examples. The initial prediction API returns a sampled frame mask, not a persistent multi-frame video result. Local API jobs are in memory only. User media should be treated as sensitive.
