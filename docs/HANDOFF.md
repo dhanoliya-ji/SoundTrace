@@ -13,7 +13,7 @@
 
 ## Current evidence
 
-- 18 Python tests pass and Ruff passes. The frontend production build passes. In-process API health/status checks, checkpoint loading, and a real-clip prediction were verified; the long-running API process may need a restart to load current code.
+- At the previous implementation checkpoint, 18 Python tests passed, Ruff passed, and the frontend production build passed. In-process API health/status checks, checkpoint loading, and a real-clip prediction were verified. On 2026-10-22, the currently running API endpoint still reported `No trained checkpoint configured`; restart the API process to load current code and `artifacts/checkpoints/best.pt`.
 - AVATAR's two public archives are downloaded under `data/raw/AVATAR/downloads/`; both ZIP integrity checks passed. The local dataset card declares CC BY 4.0. Check underlying source-media terms and attribute the dataset authors before sharing or using the media beyond the intended research use.
 - A deterministic 100-video AVATAR pilot manifest contains 483 annotated frames, has no pairing errors, validates successfully, and decodes the source clip's audio. The source-video split is 70 train, 15 validation, and 15 test videos. Manifest: `data/manifests/avatar.jsonl` (ignored by Git).
 - A paired CPU study completed for seeds 7, 17, and 27, with three epochs per model and the same 100-video manifest. Paired test-IoU deltas (gated minus baseline) were -0.0024, -0.0497, and +0.0200; mean -0.0107, sample standard deviation 0.0356. This small custom study shows no reliable gated-fusion advantage. Study report: `artifacts/reports/aacf3509d792.json` (local, ignored file).
@@ -42,9 +42,11 @@ Get-ChildItem artifacts\checkpoints -Filter "aacf3509d792-*.pt" | ForEach-Object
 
 The subset is selected deterministically from video IDs. AVATAR does not provide an official train/validation/test split in this release, so SoundTrace makes source-video-level splits.
 
-## Remaining external work
+## Remaining work
 
-The only benchmark-specific work blocked by the current workspace is acquiring authorized AVSBench-object data. Once access is granted, build and inspect the S4/MS3 manifest, then run the official split and metric protocol. AVATAR experiments are custom engineering results and must not be described as official AVSBench or AVATAR benchmark scores.
+- **Local runtime:** restart the API server so the dashboard can load the installed pilot checkpoint. The API process currently listening on port 8000 reports no checkpoint.
+- **AVSBench benchmark:** no release has been acquired or validated in this workspace. The official project page links CSV IDs and annotated masks and describes processed video/audio access by email. After authorized data is available, validate its layout, inspect the generated S4/MS3 manifest, and run the official split and metric protocol. Adapter fixture tests alone are not a benchmark run.
+- **Model evidence:** a larger, compute-appropriate study with a predeclared clean-performance tolerance and more seeds is needed before making a claim about the reliability gate. Existing AVATAR results are exploratory custom results and must not be described as official AVATAR or AVSBench scores.
 
 ## Important limits
 
