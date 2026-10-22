@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import torch
-from torch import nn
 import torch.nn.functional as F
+from torch import nn
 
 
 class ConvBlock(nn.Sequential):
@@ -23,6 +23,9 @@ class SoundTraceNet(nn.Module):
         self.audio = nn.Sequential(nn.Conv1d(1, width, 9, stride=4, padding=4), nn.GELU(),
                                    nn.Conv1d(width, width * 2, 7, stride=4, padding=3), nn.GELU(),
                                    nn.AdaptiveAvgPool1d(1))
+        self.audio_mel = nn.Sequential(nn.Conv2d(1, width, 3, padding=1), nn.GELU(),
+                                       nn.Conv2d(width, width * 2, 3, stride=2, padding=1), nn.GELU(),
+                                       nn.AdaptiveAvgPool2d(1))
         channels = width * 2
         self.gate = nn.Sequential(nn.Linear(channels * 2, channels), nn.GELU(),
                                   nn.Linear(channels, channels), nn.Sigmoid())
@@ -33,9 +36,12 @@ class SoundTraceNet(nn.Module):
                 audio_quality: torch.Tensor | None = None,
                 visual_quality: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
         vf = self.visual(video)
-        if audio.ndim == 2:
-            audio = audio.unsqueeze(1)
-        af = self.audio(audio).squeeze(-1)
+        if audio.ndim == 4:
+            af = self.audio_mel(audio).flatten(1)
+        else:
+            if audio.ndim == 2:
+                audio = audio.unsqueeze(1)
+            af = self.audio(audio).squeeze(-1)
         spatial_audio = af[:, :, None, None].expand_as(vf)
         gate = self.gate(torch.cat((vf.mean((2, 3)), af), dim=1))
         if audio_quality is not None:

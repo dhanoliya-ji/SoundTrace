@@ -1,10 +1,13 @@
 """Local FastAPI endpoints; in-process background tasks are not durable across restarts."""
 from __future__ import annotations
+
 import os
 import tempfile
 import uuid
 from pathlib import Path
 from threading import Lock
+from typing import Annotated
+
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -50,10 +53,11 @@ def process_upload(job_id: str, path: Path):
         checkpoint = configured_path(os.getenv("SOUNDTRACE_CHECKPOINT", ""), "") if os.getenv("SOUNDTRACE_CHECKPOINT") else None
         if not checkpoint or not checkpoint.is_file():
             raise ValueError("No trained checkpoint configured; refusing random-weight prediction.")
+
+        import numpy as np
         import torch
         from PIL import Image
-        import numpy as np
-        import os as _os
+
         from .model import build_model
         state = torch.load(checkpoint, map_location="cpu", weights_only=True)
         model = build_model(state["config"]); model.load_state_dict(state["model"]); model.eval()
@@ -61,7 +65,7 @@ def process_upload(job_id: str, path: Path):
         image_size = int(state["config"].get("image_size", 128))
         image = Image.fromarray(rgb).resize((image_size, image_size))
         tensor = torch.from_numpy(np.asarray(image).copy()).permute(2,0,1).float().div(255)[None]
-        from .data import decode_audio, audio_window
+        from .data import audio_window, decode_audio
         sample_rate = int(state["config"].get("audio_sample_rate", 16000))
         waveform = decode_audio(path, sample_rate)
         duration = float(state["config"].get("segment_seconds", 1.0))
@@ -69,13 +73,13 @@ def process_upload(job_id: str, path: Path):
         with torch.no_grad(): pred = model(tensor, audio)
         mask = (pred["logits"].sigmoid()[0,0] > .5).to(torch.uint8).cpu().numpy().tolist()
         with lock: jobs[job_id] = {"id": job_id, "status": "completed", "trained": True, "fps": fps, "duration": frames / fps if fps else None, "timestamp": timestamp, "mask": mask, "size": [image_size,image_size], "gate_mean": float(pred["gate"].mean())}
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - background jobs must publish failures instead of hanging.
         with lock: jobs[job_id] = {"id": job_id, "status": "failed", "error": str(exc)}
     finally:
         path.unlink(missing_ok=True)
 
 @app.post("/api/v1/predictions", status_code=202)
-async def predict(background: BackgroundTasks, file: UploadFile = File(...)):
+async def predict(background: BackgroundTasks, file: Annotated[UploadFile, File()]):
     suffix = Path(file.filename or "upload.mp4").suffix.lower()
     if suffix not in {".mp4", ".mov", ".avi", ".mkv", ".webm"}: raise HTTPException(415, "Unsupported video format")
     job_id = uuid.uuid4().hex

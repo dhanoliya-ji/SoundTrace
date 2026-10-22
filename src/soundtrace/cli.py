@@ -5,17 +5,24 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import random
 import time
 import uuid
+from pathlib import Path
 
 import numpy as np
 import torch
-from torch.nn import functional as F
 import yaml
+from torch.nn import functional as F
 
-from .data import build_avsbench_manifest, build_manifest, load_record, read_manifest, synthetic_batch, validate_manifest
+from .data import (
+    build_avsbench_manifest,
+    build_manifest,
+    load_record,
+    read_manifest,
+    synthetic_batch,
+    validate_manifest,
+)
 from .model import build_model
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -25,7 +32,12 @@ def metric(logits, target):
     pred, target = logits.sigmoid() > 0.5, target > 0.5
     inter = (pred & target).sum((1, 2, 3)).float()
     union = (pred | target).sum((1, 2, 3)).float()
-    return torch.where(union > 0, inter / union, torch.ones_like(union)).mean().item()
+    empty_target = target.sum((1, 2, 3)) == 0
+    background_intersection = ((~pred) & (~target)).sum((1, 2, 3)).float()
+    image_area = target.shape[-2] * target.shape[-1]
+    scores = torch.where(empty_target, background_intersection / image_area,
+                         inter / union.clamp_min(1))
+    return scores.mean().item()
 
 
 def f1_metric(logits, target):
@@ -34,6 +46,35 @@ def f1_metric(logits, target):
     denominator = pred.sum((1, 2, 3)).float() + target.sum((1, 2, 3)).float()
     return torch.where(denominator > 0, 2 * true_positive / denominator,
                        torch.ones_like(denominator)).mean().item()
+
+
+def f_measure_curves(logits, target, thresholds=255):
+    """Return per-image precision/recall curves for the AVSBench F-measure."""
+    probabilities = logits.sigmoid().reshape(logits.shape[0], -1)
+    targets = (target > 0.5).reshape(target.shape[0], -1)
+    values = torch.linspace(0, 1 - 1e-10, thresholds, device=logits.device)
+    predictions = probabilities.unsqueeze(-1) >= values
+    true_positive = (predictions & targets.unsqueeze(-1)).sum(dim=1).float()
+    predicted = predictions.sum(dim=1).float()
+    positives = targets.sum(dim=1, keepdim=True).float()
+    precision = true_positive / (predicted + 1e-20)
+    recall = true_positive / (positives + 1e-20)
+    return [torch.stack((precision[index], recall[index])) if positives[index].item() > 0 else None
+            for index in range(logits.shape[0])]
+
+
+def avsbench_f_measure(curves_by_video):
+    """Average per-video maximum F-measure, excluding videos with empty masks."""
+    beta_squared = 0.3
+    scores = []
+    for curves in curves_by_video.values():
+        curves = [curve for curve in curves if curve is not None]
+        if not curves:
+            continue
+        precision, recall = torch.stack(curves).mean(dim=0)
+        f_score = (1 + beta_squared) * precision * recall / (beta_squared * precision + recall + 1e-20)
+        scores.append(float(f_score.max()))
+    return float(np.mean(scores)) if scores else None
 
 
 def load_config(path):
@@ -76,7 +117,7 @@ def split_rows(rows, cfg):
     if len(ids) < 3: raise ValueError("Need at least 3 distinct video_id values for video-level train/val/test splits.")
     rng = random.Random(int(cfg.get("seed", 7))); rng.shuffle(ids)
     ntest, nval = max(1, round(len(ids)*.15)), max(1, round(len(ids)*.15))
-    test, val, train = set(ids[:ntest]), set(ids[ntest:ntest+nval]), set(ids[ntest+nval:])
+    test, val = set(ids[:ntest]), set(ids[ntest:ntest+nval])
     result = {"train": [], "val": [], "test": []}
     for row in rows:
         key = "test" if str(row["video_id"]) in test else "val" if str(row["video_id"]) in val else "train"
@@ -114,9 +155,16 @@ def split_fingerprint(splits: dict[str, list[dict]]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def project_relative(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(ROOT.resolve()))
+    except ValueError:
+        return path.name
+
+
 def train(cfg, config_path):
     if cfg.get("smoke"):
-        run_smoke(bool(cfg.get("gated"))); return
+        return run_smoke(bool(cfg.get("gated")))
     manifest = manifest_path(cfg); rows = read_manifest(manifest)
     status = validate_manifest(rows, manifest)
     if not status["valid"]: raise ValueError(json.dumps(status["errors"][:10]))
@@ -124,7 +172,10 @@ def train(cfg, config_path):
     if not splits["train"] or not splits["val"] or not splits["test"]:
         raise ValueError("Train, val and test source-video partitions must all contain examples.")
     seed_all(int(cfg.get("seed", 7)))
-    size = int(cfg.get("image_size", 128)); model_cfg = {**cfg, "width": int(cfg.get("width", 32))}
+    model_cfg = {**cfg, "width": int(cfg.get("width", 32))}
+    checkpoint = Path(cfg.get("checkpoint", "artifacts/checkpoints/best.pt"))
+    if not checkpoint.is_absolute():
+        checkpoint = ROOT / checkpoint
     model = build_model(model_cfg); optimizer = torch.optim.AdamW(model.parameters(), lr=float(cfg.get("learning_rate", 3e-4)))
     epochs = int(cfg.get("epochs", 10)); batch_size = int(cfg.get("batch_size", 2)); best = -1; history=[]; start=time.time()
     for epoch in range(epochs):
@@ -143,17 +194,52 @@ def train(cfg, config_path):
         score=float(np.mean(vals)); history.append({"epoch":epoch+1,"train_loss":float(np.mean(train_loss)),"val_iou":score})
         print(json.dumps(history[-1]))
         if score > best:
-            best=score; folder=ROOT/"artifacts"/"checkpoints"; folder.mkdir(parents=True,exist_ok=True)
-            torch.save({"config":model_cfg,"model":model.state_dict(),"epoch":epoch+1,"val_iou":score},folder/"best.pt")
-    ckpt=ROOT/"artifacts"/"checkpoints"/"best.pt"; state=torch.load(ckpt,map_location="cpu",weights_only=True)
-    model.load_state_dict(state["model"]); model.eval(); scores=[]
+            best=score; checkpoint.parent.mkdir(parents=True,exist_ok=True)
+            torch.save({"config":model_cfg,"model":model.state_dict(),"epoch":epoch+1,"val_iou":score},checkpoint)
+    state=torch.load(checkpoint,map_location="cpu",weights_only=True)
+    model.load_state_dict(state["model"]); model.eval(); scores=[]; f_curves={}
     with torch.no_grad():
         for row in splits["test"]:
             x,a,y=batch_records([row],manifest,cfg); logits=model(x,a)["logits"]
             scores.append({"video_id":row["video_id"],"iou":metric(logits,y),"f1":f1_metric(logits,y)})
+            curve=f_measure_curves(logits,y)[0]
+            if curve is not None: f_curves.setdefault(str(row["video_id"]),[]).append(curve)
     run_id=uuid.uuid4().hex[:12]
-    report={"evaluation_id":run_id,"kind":"real_data_experiment",**run_provenance(manifest,str(config_path),int(cfg.get("seed",7))),"variant":"gated" if model.gated else "baseline","split_fingerprint":split_fingerprint(splits),"split_video_counts":{k:len({str(r['video_id']) for r in v}) for k,v in splits.items()},"best_validation_iou":best,"test_mean_iou":float(np.mean([x["iou"] for x in scores])),"test_examples":scores,"history":history,"duration_seconds":time.time()-start,"checkpoint":str(ckpt.relative_to(ROOT))}
-    save_report(run_id,report); print(json.dumps(report,indent=2))
+    report={"evaluation_id":run_id,"kind":"real_data_experiment",**run_provenance(manifest,str(config_path),int(cfg.get("seed",7))),"variant":"gated" if model.gated else "baseline","split_fingerprint":split_fingerprint(splits),"split_video_counts":{k:len({str(r['video_id']) for r in v}) for k,v in splits.items()},"best_validation_iou":best,"test_mean_iou":float(np.mean([x["iou"] for x in scores])),"test_f1_at_0_5":float(np.mean([x["f1"] for x in scores])),"test_avsbench_f_measure":avsbench_f_measure(f_curves),"test_examples":scores,"history":history,"duration_seconds":time.time()-start,"checkpoint":project_relative(checkpoint)}
+    save_report(run_id,report); print(json.dumps(report,indent=2)); return report
+
+
+def run_study(cfg, config_path, seeds):
+    if not seeds or len(set(seeds)) != len(seeds):
+        raise ValueError("Provide at least one unique seed for a paired study")
+    study_id = uuid.uuid4().hex[:12]
+    pairs = []
+    for seed in seeds:
+        runs = {}
+        for gated, variant in ((False, "baseline"), (True, "gated")):
+            run_cfg = {**cfg, "seed": seed, "gated": gated,
+                       "checkpoint": f"artifacts/checkpoints/{study_id}-{variant}-seed{seed}.pt"}
+            runs[variant] = train(run_cfg, config_path)
+        baseline, gated = runs["baseline"], runs["gated"]
+        if baseline["manifest_sha256"] != gated["manifest_sha256"] or baseline["split_fingerprint"] != gated["split_fingerprint"]:
+            raise RuntimeError(f"Paired runs for seed {seed} did not use the same manifest and source-video split")
+        pairs.append({"seed": seed, "split_fingerprint": baseline["split_fingerprint"],
+                      "baseline_report_id": baseline["evaluation_id"],
+                      "gated_report_id": gated["evaluation_id"],
+                      "baseline_checkpoint": baseline["checkpoint"],
+                      "gated_checkpoint": gated["checkpoint"],
+                      "baseline_test_iou": baseline["test_mean_iou"],
+                      "gated_test_iou": gated["test_mean_iou"],
+                      "test_iou_delta": gated["test_mean_iou"] - baseline["test_mean_iou"]})
+    deltas = [pair["test_iou_delta"] for pair in pairs]
+    report = {"evaluation_id": study_id, "kind": "paired_study", "config": Path(config_path).name,
+              "manifest_sha256": pairs and runs["baseline"]["manifest_sha256"],
+              "seeds": seeds, "pairs": pairs, "mean_test_iou_delta": float(np.mean(deltas)),
+              "std_test_iou_delta": float(np.std(deltas, ddof=1)) if len(deltas) > 1 else None,
+              "interpretation": "Positive delta favors gated fusion on this paired test set; this summary alone is not statistical evidence."}
+    save_report(study_id, report)
+    print(json.dumps(report, indent=2))
+    return report
 
 
 def load_checkpoint(path):
@@ -163,13 +249,14 @@ def load_checkpoint(path):
 def main():
     parser=argparse.ArgumentParser(prog="soundtrace"); sub=parser.add_subparsers(dest="command",required=True)
     sub.add_parser("doctor"); sub.add_parser("dataset-check"); sub.add_parser("smoke")
-    for name in ("build-manifest","preprocess","train","evaluate","robustness"):
+    for name in ("build-manifest","preprocess","train","study","evaluate","robustness"):
         p=sub.add_parser(name); p.add_argument("--config",required=True)
         if name=="build-manifest":
             p.add_argument("--task",choices=("inventory","s4","ms3"),default="inventory")
             p.add_argument("--data-root")
             p.add_argument("--output")
         if name in {"evaluate","robustness"}: p.add_argument("--checkpoint",required=True)
+        if name == "study": p.add_argument("--seeds",default="7,17,27")
     p=sub.add_parser("predict"); p.add_argument("--video",required=True); p.add_argument("--checkpoint")
     p=sub.add_parser("report"); p.add_argument("--evaluation-id",required=True)
     args=parser.parse_args(); data_root=Path(os.environ.get("SOUNDTRACE_DATA_DIR",ROOT/"data"/"raw")); artifacts=ROOT/"artifacts"
@@ -190,6 +277,10 @@ def main():
         cfg=load_config(args.config); path=manifest_path(cfg); rows=read_manifest(path); status=validate_manifest(rows,path); print(json.dumps(status,indent=2))
         if not status["valid"]: raise SystemExit(2)
     elif args.command=="train": train(load_config(args.config),args.config)
+    elif args.command=="study":
+        try: seeds=[int(value.strip()) for value in args.seeds.split(",") if value.strip()]
+        except ValueError as exc: raise SystemExit("--seeds must be a comma-separated list of integers") from exc
+        run_study(load_config(args.config),args.config,seeds)
     elif args.command in {"evaluate","robustness"}:
         cfg=load_config(args.config); path=manifest_path(cfg); rows=read_manifest(path); status=validate_manifest(rows,path)
         if not status["valid"]: raise SystemExit(json.dumps(status,indent=2))
@@ -209,11 +300,19 @@ def main():
             conditions = [{}]
         if not conditions or any(not isinstance(item, dict) for item in conditions):
             raise SystemExit("Robustness config must contain at least one condition mapping")
+        allowed = {"name", "audio_video_shift_seconds", "audio_noise_std", "audio_attenuation",
+                   "audio_dropout_probability", "visual_blur_sigma", "visual_downsample_factor",
+                   "visual_occlusion_fraction"}
+        unknown = sorted({key for condition in conditions for key in condition} - allowed)
+        if unknown:
+            raise SystemExit(f"Unknown robustness condition keys: {unknown}")
         rng=torch.Generator().manual_seed(int(cfg.get("seed",7)))
+        condition_curves={}
         with torch.no_grad():
             for row in test_rows:
                 x,a,y=batch_records([row],path,cfg)
                 for condition in conditions:
+                    condition_name=str(condition.get("name") or json.dumps(condition,sort_keys=True))
                     shift=float(condition.get("audio_video_shift_seconds", 0.0))
                     noise=float(condition.get("audio_noise_std", 0.0))
                     attenuation=float(condition.get("audio_attenuation", 1.0))
@@ -227,9 +326,17 @@ def main():
                         raise ValueError("Visual blur must be nonnegative, downsample factor at least 1, and occlusion in [0, 1]")
                     shifted=a
                     if shift:
-                        from .data import audio_window, cached_audio, resolve_path
-                        sample_rate=int(cfg.get("audio_sample_rate",16000)); waveform=cached_audio(str(resolve_path(row["video"],path)),sample_rate)
-                        shifted=audio_window(waveform,float(row["timestamp"])+shift,sample_rate,float(cfg.get("segment_seconds",1)))[None]
+                        if row.get("audio_features"):
+                            from .data import cached_audio_features, resolve_path, shift_log_mel
+                            feature_path=resolve_path(row["audio_features"],path)
+                            feature=cached_audio_features(str(feature_path))[int(row.get("audio_index",0))]
+                            shifted=shift_log_mel(feature,shift,float(cfg.get("segment_seconds",1)))[None]
+                        else:
+                            from .data import audio_window, cached_audio, resolve_path
+                            if not row.get("video"):
+                                raise ValueError("Waveform time shifts require a video path")
+                            sample_rate=int(cfg.get("audio_sample_rate",16000)); waveform=cached_audio(str(resolve_path(row["video"],path)),sample_rate)
+                            shifted=audio_window(waveform,float(row["timestamp"])+shift,sample_rate,float(cfg.get("segment_seconds",1)))[None]
                     audio=shifted*attenuation
                     if noise:
                         audio=audio+torch.randn(audio.shape,generator=rng)*noise
@@ -248,17 +355,23 @@ def main():
                         top=max(0,(height-side)//2); left=max(0,(width-side)//2)
                         visual=visual.clone(); visual[:,:,top:top+side,left:left+side]=0
                     started=time.perf_counter(); logits=model(visual,audio)["logits"]; elapsed=time.perf_counter()-started
-                    results.append({"video_id":row["video_id"],**condition,"iou":metric(logits,y),"f1":f1_metric(logits,y),"latency_seconds":elapsed})
-        run_id=uuid.uuid4().hex[:12]; report={"evaluation_id":run_id,"kind":args.command,**run_provenance(path,args.config,int(cfg.get("seed",7))),"checkpoint":Path(args.checkpoint).name,"variant":"gated" if model.gated else "baseline","split_fingerprint":split_fingerprint(splits),"split_video_counts":{k:len({str(r['video_id']) for r in v}) for k,v in splits.items()},"evaluated_split":"test","results":results,"mean_iou":float(np.mean([r["iou"] for r in results])),"mean_f1":float(np.mean([r["f1"] for r in results])),"mean_latency_seconds":float(np.mean([r["latency_seconds"] for r in results]))}; save_report(run_id,report); print(json.dumps(report,indent=2))
+                    curve=f_measure_curves(logits,y)[0]
+                    if curve is not None:
+                        condition_curves.setdefault(condition_name,{}).setdefault(str(row["video_id"]),[]).append(curve)
+                    results.append({"video_id":row["video_id"],"condition":condition_name,**condition,"iou":metric(logits,y),"f1":f1_metric(logits,y),"latency_seconds":elapsed})
+        condition_summary={name:{"videos_with_foreground":len(videos),"mean_avsbench_f_measure":avsbench_f_measure(videos)} for name,videos in condition_curves.items()}
+        run_id=uuid.uuid4().hex[:12]; report={"evaluation_id":run_id,"kind":args.command,**run_provenance(path,args.config,int(cfg.get("seed",7))),"checkpoint":Path(args.checkpoint).name,"variant":"gated" if model.gated else "baseline","split_fingerprint":split_fingerprint(splits),"split_video_counts":{k:len({str(r['video_id']) for r in v}) for k,v in splits.items()},"evaluated_split":"test","results":results,"condition_summary":condition_summary,"mean_iou":float(np.mean([r["iou"] for r in results])),"mean_f1":float(np.mean([r["f1"] for r in results])),"mean_latency_seconds":float(np.mean([r["latency_seconds"] for r in results]))}; save_report(run_id,report); print(json.dumps(report,indent=2))
     elif args.command=="predict":
-        from .data import decode_audio,audio_window
         import cv2
+        from PIL import Image
+
+        from .data import audio_window, decode_audio
         path=Path(args.video); ckpt=args.checkpoint or os.environ.get("SOUNDTRACE_CHECKPOINT")
         if not ckpt or not Path(ckpt).is_file(): raise SystemExit("A trained --checkpoint is required.")
         cap=cv2.VideoCapture(str(path)); ok,frame=cap.read(); fps=cap.get(cv2.CAP_PROP_FPS) or 1; frames=int(cap.get(cv2.CAP_PROP_FRAME_COUNT)); cap.set(cv2.CAP_PROP_POS_FRAMES,max(0,frames//2)); ok,frame=cap.read(); cap.release()
         if not ok: raise SystemExit("Could not decode video frame.")
         state=torch.load(ckpt,map_location="cpu",weights_only=True); cfg=state["config"]; audio=audio_window(decode_audio(path,int(cfg.get("audio_sample_rate",16000))),frames/(2*fps),int(cfg.get("audio_sample_rate",16000)),float(cfg.get("segment_seconds",1)))
-        rgb=cv2.cvtColor(frame,cv2.COLOR_BGR2RGB); from PIL import Image
+        rgb=cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
         arr=np.asarray(Image.fromarray(rgb).resize((int(cfg.get("image_size",128)),)*2),dtype=np.float32).copy()/255
         video=torch.from_numpy(arr).permute(2,0,1)[None]; model,_=load_checkpoint(ckpt)
         with torch.no_grad(): out=model(video,audio[None]); mask=(out["logits"].sigmoid()[0,0]>.5).byte().numpy()

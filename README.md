@@ -25,11 +25,11 @@ python -m soundtrace.cli dataset-check
 python -m soundtrace.cli build-manifest --config configs/smoke_test.yaml
 ```
 
-To run the backend in PowerShell (from the repository root): `uvicorn soundtrace.api:app --app-dir src --reload`. To run the UI, open another PowerShell window, `cd frontend`, run `npm install`, then `npm run dev`. Set `VITE_API_BASE_URL=http://127.0.0.1:8000` in `frontend/.env.local` if needed. The dashboard is served by Vite at its displayed local URL. With no checkpoint it reports unavailability and will not pretend random weights are trained. FFmpeg must be installed and on `PATH` for audio inference and training.
+To run the backend in PowerShell (from the repository root): `uvicorn soundtrace.api:app --app-dir src --reload`. To run the UI, open another PowerShell window, `cd frontend`, run `npm install`, then `npm run dev`. Set `VITE_API_BASE_URL=http://127.0.0.1:8000` in `frontend/.env.local` if needed. The dashboard is served by Vite at its displayed local URL. With no checkpoint it reports unavailability and will not pretend random weights are trained. FFmpeg must be installed and on `PATH` for raw-video audio inference/training; AVSBench manifests use prepared log-mel features.
 
 ## Dataset
 
-Request AVSBench access using the official project instructions; review the dataset license, source media terms, and attribution requirements first. Do not commit acquired data or checkpoints. Set `SOUNDTRACE_DATA_DIR` to the acquired root. Dataset layout varies by release; the manifest builder scans supported video and mask extensions and reports unmatched files rather than assuming a single fixed layout. Inspect the generated manifest and reconcile it with the official release annotations before training.
+Request AVSBench-object access using the official project instructions; review the dataset license, source media terms, and attribution requirements first. Do not commit acquired data or checkpoints. Set `SOUNDTRACE_DATA_DIR` to the acquired root, then build an S4 or MS3 manifest using its matching config. The adapter follows the official loader paths and emits processed-frame/log-mel records. Inspect the generated manifest and reconcile it with your release before training.
 
 See `docs/DATASET.md`, `docs/DATASET_TERMS.md`, and `docs/RELATED_WORK.md`.
 
@@ -40,10 +40,13 @@ python -m soundtrace.cli train --config configs/baseline.yaml
 python -m soundtrace.cli train --config configs/gated_fusion.yaml
 python -m soundtrace.cli evaluate --checkpoint artifacts/checkpoints/best.pt --config configs/baseline.yaml
 python -m soundtrace.cli robustness --checkpoint artifacts/checkpoints/best.pt --config configs/corruption_tests.yaml
+python -m soundtrace.cli study --config configs/s4_baseline.yaml --seeds 7,17,27
 python -m soundtrace.cli predict --video .\example.mp4 --checkpoint artifacts/checkpoints/best.pt
 ```
 
-Training expects a reviewed JSONL manifest with `video`, `mask`, `video_id`, and `timestamp` fields (paths may be absolute or relative to the manifest). An optional `split` field may provide `train`, `val`, or `test`; otherwise deterministic source-video splits are assigned. At least three distinct videos are required. Use `build-manifest` only as an inventory aid; it cannot infer official AVSBench annotation mappings. On CPU use the smoke config; full-resolution or full-data work may exceed laptop resources. Evaluation writes observed metrics to `artifacts/`. Checkpoints are selected on validation only.
+`study` trains baseline and gated variants with matched settings and source-video splits for each seed, saves a separate checkpoint per run, and reports paired test-IoU deltas with their across-seed standard deviation. It requires a valid reviewed manifest and can take substantial time.
+
+Training expects a reviewed JSONL manifest containing `mask`, `video_id`, and `timestamp`, plus either a `video` path or both `frame` and `audio_features` paths. An optional `split` field may provide `train`, `val`, and `test`; otherwise deterministic source-video splits are assigned and at least three distinct videos are required. Use `build-manifest` with `--task s4` or `--task ms3` for official folder layouts; inventory mode is not train-ready. On CPU use the smoke config; full-resolution or full-data work may exceed laptop resources. Evaluation writes observed metrics to `artifacts/`. Checkpoints are selected on validation only.
 
 ## API
 

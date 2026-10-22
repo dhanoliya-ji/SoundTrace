@@ -1,8 +1,9 @@
 """Manifest, decoding, alignment and synthetic fixture helpers."""
 from __future__ import annotations
 
-import json
 import csv
+import json
+import pickle
 from functools import lru_cache
 from pathlib import Path
 
@@ -34,15 +35,11 @@ def build_manifest(root: Path, output: Path) -> dict:
 
 
 def build_avsbench_manifest(root: Path, output: Path, task: str) -> dict:
-    """Read the official object-task metadata and emitted frame/mask filenames.
-
-    This creates sample records from the official metadata CSV and processed
-    AVSBench image/mask directories. It never guesses a pair from a shared
-    video/image stem; absent or ambiguous files are reported as errors.
-    """
+    """Read official object-task metadata and S4/MS3 frame, mask, and audio paths."""
     if task not in {"s4", "ms3"}:
         raise ValueError("AVSBench object task must be s4 or ms3")
-    subset, stem = ("Single-source", "s4") if task == "s4" else ("Multi-sources", "ms3")
+    stem = "s4" if task == "s4" else "ms3"
+    subset = "Single-source" if task == "s4" else "Multi-sources"
     csv_name = f"{stem}_meta_data.csv"
     csv_candidates = list(root.rglob(csv_name))
     if len(csv_candidates) != 1:
@@ -59,34 +56,46 @@ def build_avsbench_manifest(root: Path, output: Path, task: str) -> dict:
         resolved = {}
         for target, choices in aliases.items():
             resolved[target] = next((fields[c] for c in choices if c in fields), None)
-        if not all(resolved.values()):
+        required_columns = ("video_name", "split") if task == "ms3" else ("video_name", "category", "split")
+        if any(not resolved[name] for name in required_columns):
             raise ValueError(f"Unexpected {csv_name} columns: {reader.fieldnames}")
         for line_no, row in enumerate(reader, 2):
             video_id = str(row[resolved["video_name"]]).strip()
-            category = str(row[resolved["category"]]).strip()
+            category = str(row[resolved["category"]]).strip() if resolved["category"] else ""
             split = str(row[resolved["split"]]).strip().lower()
             split = "val" if split in {"valid", "validation", "val"} else split
             if not video_id or split not in {"train", "val", "test"}:
                 errors.append({"line": line_no, "video_id": video_id, "error": f"invalid id or split {split!r}"})
                 continue
-            video_matches = [p for p in root.rglob(f"{video_id}.mp4") if "raw_videos" in p.parts]
-            if len(video_matches) != 1:
-                errors.append({"line": line_no, "video_id": video_id, "error": f"expected one raw video, found {len(video_matches)}"})
+            if task == "s4":
+                base = root / subset / "s4_data"
+                frame_dir = base / "visual_frames" / split / category / video_id
+                mask_dir = base / "gt_masks" / split / category / video_id
+                feature_path = base / "audio_log_mel" / split / category / f"{video_id}.pkl"
+            else:
+                base = root / subset / "ms3_data"
+                frame_dir = base / "visual_frames" / video_id
+                mask_dir = base / "gt_masks" / split / video_id
+                feature_path = base / "audio_log_mel" / split / f"{video_id}.pkl"
+            if not feature_path.is_file():
+                errors.append({"line": line_no, "video_id": video_id,
+                               "error": f"missing audio feature file: {feature_path.relative_to(root)}"})
                 continue
             frame_ids = [1] if task == "s4" and split == "train" else [1, 2, 3, 4, 5]
             for frame_id in frame_ids:
-                image_names = {f"{video_id}.mp4_{frame_id}.png", f"{video_id}_{frame_id}.png"}
-                image_matches = [p for p in root.rglob("*.png") if "visual_frames" in p.parts and p.name in image_names]
+                frame_name = f"{video_id}_{frame_id}.png" if task == "s4" else f"{video_id}.mp4_{frame_id}.png"
+                image_path = frame_dir / frame_name
                 mask_name = f"{video_id}_{frame_id}.png"
-                mask_matches = [p for p in root.rglob(mask_name) if "gt_masks" in p.parts]
-                if len(image_matches) != 1 or len(mask_matches) != 1:
+                mask_path = mask_dir / mask_name
+                if not image_path.is_file() or not mask_path.is_file():
                     errors.append({"line": line_no, "video_id": video_id, "frame_id": frame_id,
-                                   "error": f"expected one visual frame and mask; found {len(image_matches)} frames and {len(mask_matches)} masks"})
+                                   "error": f"expected one visual frame and mask; found {int(image_path.is_file())} frames and {int(mask_path.is_file())} masks"})
                     continue
-                rows.append({"video_id": video_id, "video": str(video_matches[0].resolve()),
-                             "frame": str(image_matches[0].resolve()), "mask": str(mask_matches[0].resolve()),
-                             "timestamp": frame_id - 0.5, "split": split, "task": task,
-                             "category": category, "annotation_frame": frame_id})
+                rows.append({"video_id": video_id, "frame": str(image_path.resolve()),
+                             "mask": str(mask_path.resolve()), "audio_features": str(feature_path.resolve()),
+                             "audio_index": frame_id - 1, "timestamp": frame_id - 0.5,
+                             "split": split, "task": task, "category": category,
+                             "annotation_frame": frame_id})
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
     return {"task": task, "metadata_csv": str(meta), "records": len(rows), "errors": errors,
@@ -122,7 +131,7 @@ def resolve_path(value: str, manifest_path: Path) -> Path:
 
 
 def validate_manifest(rows: list[dict], manifest_path: Path) -> dict:
-    required = {"video", "mask", "video_id", "timestamp"}
+    required = {"mask", "video_id", "timestamp"}
     errors, seen = [], {}
     if not rows:
         errors.append({"line": 0, "error": "manifest contains no records"})
@@ -136,11 +145,17 @@ def validate_manifest(rows: list[dict], manifest_path: Path) -> dict:
         if absent:
             errors.append({"line": index, "error": f"missing fields: {sorted(absent)}"})
             continue
-        video, mask = resolve_path(row["video"], manifest_path), resolve_path(row["mask"], manifest_path)
-        if not video.is_file(): errors.append({"line": index, "error": f"video missing: {video.name}"})
+        mask = resolve_path(row["mask"], manifest_path)
         if not mask.is_file(): errors.append({"line": index, "error": f"mask missing: {mask.name}"})
+        if row.get("video"):
+            video = resolve_path(row["video"], manifest_path)
+            if not video.is_file(): errors.append({"line": index, "error": f"video missing: {video.name}"})
         if row.get("frame") and not resolve_path(row["frame"], manifest_path).is_file():
             errors.append({"line": index, "error": f"frame missing: {Path(row['frame']).name}"})
+        if row.get("audio_features") and not resolve_path(row["audio_features"], manifest_path).is_file():
+            errors.append({"line": index, "error": f"audio feature file missing: {Path(row['audio_features']).name}"})
+        if not row.get("video") and not (row.get("frame") and row.get("audio_features")):
+            errors.append({"line": index, "error": "provide a video path, or both frame and audio_features paths"})
         group = str(row["video_id"])
         split = row.get("split")
         if split:
@@ -154,11 +169,11 @@ def validate_manifest(rows: list[dict], manifest_path: Path) -> dict:
 
 def load_record(row: dict, manifest_path: Path, size: int, sample_rate: int, duration: float):
     import cv2
-    video_path = resolve_path(row["video"], manifest_path)
     mask_path = resolve_path(row["mask"], manifest_path)
     if row.get("frame"):
         video = load_image(str(resolve_path(row["frame"], manifest_path)), size)
     else:
+        video_path = resolve_path(row["video"], manifest_path)
         cap = cv2.VideoCapture(str(video_path))
         if not cap.isOpened(): raise ValueError(f"Cannot decode video: {video_path.name}")
         cap.set(cv2.CAP_PROP_POS_MSEC, max(0, float(row["timestamp"])) * 1000)
@@ -169,14 +184,45 @@ def load_record(row: dict, manifest_path: Path, size: int, sample_rate: int, dur
         arr = np.asarray(image, dtype=np.float32).copy() / 255.0
         video = torch.from_numpy(arr).permute(2, 0, 1)
     mask = load_mask(str(mask_path), size)
-    waveform = cached_audio(str(video_path), sample_rate)
-    audio = audio_window(waveform, float(row["timestamp"]), sample_rate, duration)
+    if row.get("audio_features"):
+        feature_path = resolve_path(row["audio_features"], manifest_path)
+        features = cached_audio_features(str(feature_path))
+        feature_index = int(row.get("audio_index", round(float(row["timestamp"]) + 0.5) - 1))
+        if features.ndim == 4 and features.shape[0] == 5:
+            if not 0 <= feature_index < 5:
+                raise ValueError(f"Audio feature index must be between 0 and 4: {feature_index}")
+            audio = features[feature_index]
+        elif features.ndim == 3:
+            audio = features
+        else:
+            raise ValueError(f"Unexpected AVSBench audio feature shape: {list(features.shape)}")
+        if not torch.isfinite(audio).all():
+            raise ValueError(f"Non-finite audio features in {feature_path.name}")
+    else:
+        video_path = resolve_path(row["video"], manifest_path)
+        waveform = cached_audio(str(video_path), sample_rate)
+        audio = audio_window(waveform, float(row["timestamp"]), sample_rate, duration)
     return video, audio, mask
 
 
 @lru_cache(maxsize=16)
 def cached_audio(path: str, sample_rate: int) -> torch.Tensor:
     return decode_audio(path, sample_rate)
+
+
+@lru_cache(maxsize=32)
+def cached_audio_features(path: str) -> torch.Tensor:
+    """Load audio-feature pickles produced by the official AVSBench scripts."""
+    with Path(path).open("rb") as handle:
+        value = pickle.load(handle)
+    if hasattr(value, "detach"):
+        value = value.detach().cpu()
+    features = torch.as_tensor(value, dtype=torch.float32)
+    if features.ndim == 4 and features.shape[0] == 5:
+        return features.contiguous()
+    if features.ndim == 3:
+        return features.contiguous()
+    raise ValueError(f"Unsupported audio feature shape in {Path(path).name}: {list(features.shape)}")
 
 
 def audio_window(waveform: torch.Tensor, timestamp: float, sample_rate: int, duration: float = 1.0) -> torch.Tensor:
@@ -193,6 +239,23 @@ def audio_window(waveform: torch.Tensor, timestamp: float, sample_rate: int, dur
     if src_b > src_a:
         out[src_a - start:src_b - start] = waveform[src_a:src_b]
     return out
+
+
+def shift_log_mel(feature: torch.Tensor, seconds: float, clip_duration: float = 1.0) -> torch.Tensor:
+    """Shift a [channels, time, mel] clip with zero padding, never circular wrap."""
+    if feature.ndim != 3:
+        raise ValueError(f"Expected log-mel feature [channels, time, mel], got {list(feature.shape)}")
+    offset = round(abs(seconds) / clip_duration * feature.shape[-2])
+    if offset == 0:
+        return feature
+    shifted = torch.zeros_like(feature)
+    if offset >= feature.shape[-2]:
+        return shifted
+    if seconds > 0:
+        shifted[:, :-offset, :] = feature[:, offset:, :]
+    else:
+        shifted[:, offset:, :] = feature[:, :-offset, :]
+    return shifted
 
 
 def load_image(path: str, size: int = 128) -> torch.Tensor:
