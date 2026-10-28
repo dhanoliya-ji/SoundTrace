@@ -1,0 +1,13 @@
+# AVATAR training. Variants/datasets via --set, e.g.  --set gated=true   --set manifest=data/manifests/s4.jsonl
+manifest: data/manifests/avatar.jsonl
+gated: false
+pretrained: true        # ImageNet ResNet18 weights from torchvision (downloaded once, ~45 MB)
+width: 64
+image_size: 224
+audio_sample_rate: 16000
+segment_seconds: 1.0
+epochs: 15
+patience: 5
+batch_size: 16
+learning_rate: 0.0003
+seed: 7

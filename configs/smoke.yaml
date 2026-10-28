@@ -1,0 +1,3 @@
+# Synthetic CPU smoke test: proves the pipeline runs, says nothing about accuracy.
+smoke: true
+gated: false

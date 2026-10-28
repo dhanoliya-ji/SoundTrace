@@ -1,26 +1,24 @@
 [build-system]
-requires = ["setuptools", "wheel"]
+requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "soundtrace"
-version = "0.1.0"
+version = "0.2.0"
 description = "Research prototype for reliable audio-visual source segmentation"
 requires-python = ">=3.11,<3.13"
-dependencies = ["torch>=2.2", "numpy>=1.26", "PyYAML>=6", "Pillow>=10", "opencv-python-headless>=4.9", "imageio-ffmpeg>=0.6"]
+dependencies = ["torch>=2.2", "torchvision>=0.17", "numpy>=1.26", "PyYAML>=6", "Pillow>=10",
+                "opencv-python-headless>=4.9", "imageio-ffmpeg>=0.6",
+                "fastapi>=0.110", "uvicorn>=0.27", "python-multipart>=0.0.9"]
 
 [project.optional-dependencies]
-api = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "python-multipart>=0.0.9"]
 dev = ["pytest>=8", "ruff>=0.4"]
-
-[tool.setuptools]
-package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-
 [tool.ruff]
-line-length = 100
+line-length = 145
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E731", "B905"]
