@@ -70,7 +70,34 @@ Uploads are size-limited and deleted after inference. The endpoints are: `GET /a
 
 ## Results
 
-RESULTS_PLACEHOLDER
+3-seed paired study on a deterministic **600-video AVATAR subset** (2,926 annotated frames; source-video split
+420/90/90 videos), RTX 3050, about 15 min per run. Test IoU at 0.5 on the held-out videos (study `556f94cd6868`):
+
+| Seed | Baseline | Gated | Δ (pp) |
+|---|---|---|---|
+| 7  | 31.04 | 32.34 | +1.30 |
+| 17 | 36.10 | 36.57 | +0.47 |
+| 27 | 35.63 | 35.38 | −0.25 |
+| **mean** | 34.26 | 34.76 | **+0.51 ± 0.78** |
+
+Robustness, seed 7 (reports `bc208c24e1a2` baseline / `6b02de5be7de` gated in `artifacts/reports/`), test IoU %:
+
+| Condition | Baseline | Gated |
+|---|---|---|
+| clean | 31.0 | 32.3 |
+| audio muted | 29.8 | 29.7 |
+| audio noise σ=0.05 | 31.0 | 33.2 |
+| audio shift +2 s | 31.0 | 31.8 |
+| blur σ=2 | 26.8 | 28.7 |
+| downsample ×4 | 25.3 | 27.9 |
+| occlusion 30 % | 12.9 | 13.0 |
+| combined | 19.1 | 20.4 |
+
+**Reading.** The gated model is slightly ahead in 2 of 3 seeds, but the mean gain (+0.5 pp) is smaller than its
+spread across seeds, so the hypothesis is **not confirmed**. Muting the audio costs both models only 1–3 pp, so they
+lean mostly on visual saliency. That is the main weakness to fix next, for example with harder multi-source and
+off-screen training samples. These numbers come from a custom split, not official AVATAR or AVSBench scores. The
+earlier 100-video, random-init pilot (mean Δ −1.1 pp) is superseded.
 
 ## Limitations
 
